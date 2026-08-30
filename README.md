@@ -31,14 +31,16 @@ files. `--base <ref>` restricts findings to lines added since `<ref>` (via
 |------|---------|
 | 0 | Clean - no findings |
 | 1 | Advisory findings only |
+| 2 | Usage error - invalid or missing command-line arguments |
 | 3 | A bright-line violation was found |
 | 4 | Internal error (unreadable file, unsupported Python version, ...) |
 
 ## Requirements
 
-Python 3.12+ - the Python analysis uses `tokenize`'s f-string token support,
-added in 3.12. Below that, Python findings are skipped and reported as exit
-code 4; YAML findings are unaffected.
+Python 3.12 or newer - the Python analysis uses `tokenize`'s f-string token
+support, added in 3.12. Below that, Python findings are skipped and reported
+as exit code 4; YAML findings are unaffected. CI runs the suite on 3.12,
+3.13, and 3.14.
 
 ## Consumers
 
@@ -46,7 +48,9 @@ code 4; YAML findings are unaffected.
 surface. Known external consumers:
 
 - `home-assistant-config`'s differential comment-guard test imports
-  `find_misplaced_rationale` and `DOCSTRING_LINE_THRESHOLD` directly.
+  `find_misplaced_rationale` and `DOCSTRING_LINE_THRESHOLD` directly, and
+  also matches the returned message text against the `"Docstring spans"`
+  prefix - not just the symbol name.
 
-If you change a symbol listed in `tests/test_public_api.py`, check for
-consumers before merging.
+If you change a symbol or a message prefix listed in
+`tests/test_public_api.py`, check for consumers before merging.

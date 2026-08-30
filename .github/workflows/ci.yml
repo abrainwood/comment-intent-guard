@@ -5,29 +5,40 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install ruff
+      - run: pip install ruff==0.16.5
       - run: ruff check .
+      - name: Dogfood the guard on its own diff
+        run: |
+          python comment_intent_guard.py --base origin/main \
+            comment_intent_guard.py \
+            tests/test_comment_intent_guard.py \
+            tests/test_public_api.py
 
   test:
     runs-on: ubuntu-latest
     strategy:
       matrix:
         # 3.12 is the floor - the Python analysis needs tokenize's f-string
-        # token support. 3.14 is home-assistant-config's pinned consumer
-        # version.
-        python-version: ["3.12", "3.14"]
+        # token support. 3.13 is the current stable release. 3.14 is
+        # home-assistant-config's pinned consumer version.
+        python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install pytest
+      - run: pip install pytest==8.3.4
       - run: pytest -q
