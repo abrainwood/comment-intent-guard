@@ -84,9 +84,30 @@ def _shape_problems(findings):
     return problems
 
 
-def _misplaced_rationale_sample():
+def _oversize_docstring_text():
     prose = "\n".join(f"    reason {i}" for i in range(guard.DOCSTRING_LINE_THRESHOLD + 1))
-    return guard.find_misplaced_rationale(f'"""\n{prose}\n"""\n')
+    return f'"""\n{prose}\n"""\n'
+
+
+def _misplaced_rationale_sample():
+    return guard.find_misplaced_rationale(_oversize_docstring_text())
+
+
+# home-assistant-config's differential test also couples to this literal
+# message prefix from find_misplaced_rationale, via f.startswith(...) -
+# renaming the wording (not just the symbol) is a breaking change too.
+CONSUMER_MESSAGE_PREFIXES = {
+    "find_misplaced_rationale": "Docstring spans",
+}
+
+
+def _missing_consumer_prefixes(module):
+    missing = []
+    for fn_name, prefix in CONSUMER_MESSAGE_PREFIXES.items():
+        findings = getattr(module, fn_name)(_oversize_docstring_text())
+        if not any(message.startswith(prefix) for message, _ in findings):
+            missing.append((fn_name, prefix))
+    return missing
 
 
 def _yaml_findings_sample():
@@ -214,27 +235,40 @@ def test_cli_exit_code_matches_the_finding_severity(build_file, expected_code, t
     assert _run_cli(["--all", str(path)]).returncode == expected_code
 
 
-def _undeclared_public_symbols(module):
-    declared = set(PUBLIC_FUNCTIONS) | set(PUBLIC_CONSTANTS) | set(PUBLIC_EXCEPTIONS)
-    actual = {
-        name for name in dir(module)
-        if not name.startswith("_") and not inspect.ismodule(getattr(module, name))
+def test_cli_exit_code_for_a_missing_file_argument_is_a_usage_error():
+    assert _run_cli(["--all"]).returncode == 2
+
+
+def _module_public_names(module):
+    return {
+        name for name, obj in vars(module).items()
+        if not name.startswith("_")
+        and not inspect.ismodule(obj)
+        and getattr(obj, "__module__", module.__name__) == module.__name__
     }
-    return actual - declared
 
 
-def test_declared_surface_covers_every_public_symbol_on_the_module():
-    undeclared = _undeclared_public_symbols(guard)
-    assert not undeclared, f"public symbols on the module are not declared: {undeclared}"
+def _declared_public_names():
+    return set(PUBLIC_FUNCTIONS) | set(PUBLIC_CONSTANTS) | set(PUBLIC_EXCEPTIONS)
 
 
-def test_exhaustiveness_check_catches_a_new_public_function_left_undeclared():
+def test_declared_surface_matches_the_modules_actual_public_surface():
+    assert _module_public_names(guard) == _declared_public_names()
+
+
+def test_surface_check_catches_a_new_public_function_left_undeclared():
     added = _load_module(name="comment_intent_guard_extra_symbol_for_test")
     added.a_new_undeclared_function = lambda: None
+    added.a_new_undeclared_function.__module__ = added.__name__
 
-    undeclared = _undeclared_public_symbols(added)
+    assert _module_public_names(added) != _declared_public_names()
+    assert "a_new_undeclared_function" in _module_public_names(added) - _declared_public_names()
 
-    assert undeclared == {"a_new_undeclared_function"}
+
+def test_surface_check_catches_a_declared_symbol_dropped_from_the_declaration():
+    shrunk_declaration = _declared_public_names() - {"find_yaml_findings"}
+
+    assert _module_public_names(guard) != shrunk_declaration
 
 
 def test_shape_check_catches_a_finding_producer_returning_bare_strings():
@@ -244,6 +278,23 @@ def test_shape_check_catches_a_finding_producer_returning_bare_strings():
     problems = _shape_problems(mutated.find_misplaced_rationale("irrelevant"))
 
     assert problems
+
+
+def test_consumer_message_prefixes_are_still_produced():
+    assert _missing_consumer_prefixes(guard) == []
+
+
+def test_consumer_prefix_check_catches_a_reworded_finding_message():
+    reworded = _load_module(name="comment_intent_guard_reworded_message_for_test")
+    real_finder = reworded.find_misplaced_rationale
+    reworded.find_misplaced_rationale = lambda text: [
+        (message.replace("Docstring spans", "Docstring covers"), span)
+        for message, span in real_finder(text)
+    ]
+
+    missing = _missing_consumer_prefixes(reworded)
+
+    assert missing == [("find_misplaced_rationale", "Docstring spans")]
 
 
 def test_existence_check_catches_a_declared_function_renamed_on_the_module():
