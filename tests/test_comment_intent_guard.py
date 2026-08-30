@@ -1872,6 +1872,62 @@ def test_a_repo_config_with_one_badly_shaped_prefix_rejects_the_whole_list_and_w
     assert "malformed" in warning.lower()
 
 
+def test_a_hyphenated_docstring_id_whose_prefix_is_repo_allowlisted_is_not_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["mg"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""MG-1 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+
+
+def test_a_hyphenated_docstring_id_whose_prefix_is_not_repo_allowlisted_is_still_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["mg"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""SP-9 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert any("SP-9" in v for v, _ in violations)
+
+
+def test_one_declared_lowercase_prefix_clears_both_the_filename_and_hyphenated_id_forms(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    target.parent.mkdir(parents=True)
+    source = '"""SP-9 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+
+
+def test_a_six_letter_prefix_is_a_valid_allowlist_entry_and_clears_its_hyphenated_id(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["zscbay"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""ZSCBAY-1 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+    assert capsys.readouterr().err == ""
+
+
+def test_a_seven_letter_prefix_is_still_rejected_as_malformed(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["zscbays"]})
+    target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp1" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
 def test_e2e_hook_does_not_deny_a_new_file_whose_repo_allowlists_its_id_prefix(tmp_path):
     _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
     target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"

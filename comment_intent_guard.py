@@ -334,15 +334,22 @@ def _is_standards_token(token):
     return _normalised_id(token) in _STANDARDS_TOKENS
 
 
-def _external_ids_in(text):
-    return [m for m in _EXTERNAL_ID_RE.findall(text) if not _is_standards_token(m)]
+def _external_id_prefix(identifier):
+    return identifier.split("-", 1)[0].lower()
+
+
+def _external_ids_in(text, allowed_prefixes):
+    return [
+        m for m in _EXTERNAL_ID_RE.findall(text)
+        if not _is_standards_token(m) and _external_id_prefix(m) not in allowed_prefixes
+    ]
 
 
 _ID_TOKEN_RE = re.compile(r"^(?P<prefix>[a-z]{2,4})\d{1,3}[a-z]?$")
 
 _REPO_CONFIG_FILENAME = ".comment-intent-guard.json"
 _ID_ALLOWLIST_CONFIG_KEY = "id_prefix_allowlist"
-_ID_PREFIX_SHAPE_RE = re.compile(r"^[a-z]{2,4}$")
+_ID_PREFIX_SHAPE_RE = re.compile(r"^[a-z]{2,6}$")
 
 
 def _find_repo_config_path(file_path):
@@ -383,7 +390,7 @@ def _repo_id_prefix_allowlist(file_path):
         isinstance(p, str) and _ID_PREFIX_SHAPE_RE.match(p) for p in prefixes
     )):
         return _malformed_repo_config(
-            config_path, f"'{_ID_ALLOWLIST_CONFIG_KEY}' must be a list of 2-4 letter lowercase prefixes"
+            config_path, f"'{_ID_ALLOWLIST_CONFIG_KEY}' must be a list of 2-6 letter lowercase prefixes"
         )
     return frozenset(prefixes)
 
@@ -471,7 +478,7 @@ def _filename_violations(file_path, allowed_prefixes):
     stem = posixpath.splitext(posixpath.basename(file_path))[0]
     return [
         (_external_id_violation(found, "the filename", 1), (1, 1))
-        for found in _id_tokens_in_identifier(stem, allowed_prefixes) + _external_ids_in(stem)
+        for found in _id_tokens_in_identifier(stem, allowed_prefixes) + _external_ids_in(stem, allowed_prefixes)
     ]
 
 
@@ -486,7 +493,7 @@ def find_blocking_violations(text, file_path):
                 if _looks_like_triple_quoted(tok.string):
                     violations.extend(
                         (_external_id_violation(found, "a docstring", tok.start[0]), (tok.start[0], tok.end[0]))
-                        for found in _external_ids_in(tok.string)
+                        for found in _external_ids_in(tok.string, allowed_prefixes)
                     )
             if not _is_test_definition(chunk, i):
                 continue
