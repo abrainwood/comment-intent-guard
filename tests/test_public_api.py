@@ -4,6 +4,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 _MODULE_PATH = Path(__file__).resolve().parent.parent / "comment_intent_guard.py"
 
 
@@ -62,25 +64,97 @@ def test_declared_function_parameters_match_the_declared_arity():
         assert actual == params, f"{name} has parameters {actual}, declared as {params}"
 
 
-def test_finding_producing_functions_return_lists_of_message_and_span_pairs():
+def _shape_problems(findings):
+    problems = []
+    for finding in findings:
+        try:
+            message, span = finding
+        except (TypeError, ValueError) as exc:
+            problems.append(str(exc))
+            continue
+        if not isinstance(message, str):
+            problems.append(f"message is {type(message).__name__}, not str")
+        try:
+            start, end = span
+        except (TypeError, ValueError) as exc:
+            problems.append(str(exc))
+            continue
+        if not (isinstance(start, int) and isinstance(end, int)):
+            problems.append(f"span is ({type(start).__name__}, {type(end).__name__}), not (int, int)")
+    return problems
+
+
+def _misplaced_rationale_sample():
     prose = "\n".join(f"    reason {i}" for i in range(guard.DOCSTRING_LINE_THRESHOLD + 1))
-    misplaced = guard.find_misplaced_rationale(f'"""\n{prose}\n"""\n')
+    return guard.find_misplaced_rationale(f'"""\n{prose}\n"""\n')
 
+
+def _yaml_findings_sample():
     yaml_lines = "\n".join(f"# reason {i}" for i in range(guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1))
-    yaml_findings = guard.find_yaml_findings(f"{yaml_lines}\nkey: value\n")
+    return guard.find_yaml_findings(f"{yaml_lines}\nkey: value\n")
 
-    blocking = guard.find_blocking_violations(
+
+def _blocking_violations_sample():
+    return guard.find_blocking_violations(
         'def test_thing():\n    """Checks the thing."""\n    assert True\n',
         "/repo/tests/test_thing.py",
     )
 
-    for findings in (misplaced, yaml_findings, blocking):
-        assert findings
-        for finding in findings:
-            message, span = finding
-            assert isinstance(message, str)
-            start, end = span
-            assert isinstance(start, int) and isinstance(end, int)
+
+@pytest.mark.parametrize(
+    "build_findings",
+    [_misplaced_rationale_sample, _yaml_findings_sample, _blocking_violations_sample],
+    ids=["find_misplaced_rationale", "find_yaml_findings", "find_blocking_violations"],
+)
+def test_finding_producing_function_returns_well_shaped_findings(build_findings):
+    findings = build_findings()
+    assert findings
+    assert _shape_problems(findings) == []
+
+
+def test_docstring_finding_span_tracks_where_the_docstring_actually_sits():
+    body_line_count = guard.DOCSTRING_LINE_THRESHOLD + 1
+    prose = "\n".join(f"    reason {i}" for i in range(body_line_count))
+
+    for leading_lines in (0, 5):
+        prefix = "x = 1\n" * leading_lines
+        text = f'{prefix}"""\n{prose}\n"""\n'
+
+        findings = guard.find_misplaced_rationale(text)
+
+        _, span = next(f for f in findings if f[0].startswith("Docstring spans"))
+        start, end = span
+        assert start <= end
+        assert span == (1 + leading_lines, body_line_count + 2 + leading_lines)
+
+
+def test_yaml_comment_run_span_tracks_where_the_run_actually_sits():
+    run_len = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    run_lines = "\n".join(f"# reason {i}" for i in range(run_len))
+
+    for leading_lines in (0, 5):
+        prefix = "key0: value\n" * leading_lines
+        text = f"{prefix}{run_lines}\nkey: value\n"
+
+        findings = guard.find_yaml_findings(text)
+
+        _, span = next(f for f in findings if f[0].startswith("Comment run"))
+        start, end = span
+        assert start <= end
+        assert span == (1 + leading_lines, run_len + leading_lines)
+
+
+def test_blocking_violation_span_tracks_where_the_flagged_docstring_actually_sits():
+    for leading_lines in (0, 5):
+        prefix = "x = 1\n" * leading_lines
+        text = f'{prefix}"""MG-1 golden case\nsecond line\nthird line\n"""\nVALUE = 1\n'
+
+        violations = guard.find_blocking_violations(text, "/repo/tests/test_gap.py")
+
+        _, span = next(v for v in violations if "MG-1" in v[0])
+        start, end = span
+        assert start <= end
+        assert span == (1 + leading_lines, 4 + leading_lines)
 
 
 def test_declared_constants_have_the_declared_type():
@@ -105,24 +179,71 @@ def _run_cli(args):
     )
 
 
-def test_cli_exit_codes_are_0_clean_1_advisory_3_bright_line_4_internal_error(tmp_path):
-    clean = tmp_path / "clean.yaml"
-    clean.write_text("key: value\n")
-    assert _run_cli(["--all", str(clean)]).returncode == 0
+def _clean_yaml(tmp_path):
+    path = tmp_path / "clean.yaml"
+    path.write_text("key: value\n")
+    return path
 
-    advisory = tmp_path / "advisory.yaml"
-    advisory.write_text(
+
+def _advisory_yaml(tmp_path):
+    path = tmp_path / "advisory.yaml"
+    path.write_text(
         "\n".join(f"# reason {i}" for i in range(guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1))
         + "\nkey: value\n"
     )
-    assert _run_cli(["--all", str(advisory)]).returncode == 1
+    return path
 
-    bright_line = tmp_path / "jira123_fix.py"
-    bright_line.write_text("VALUE = 1\n")
-    assert _run_cli(["--all", str(bright_line)]).returncode == 3
 
-    missing = tmp_path / "does_not_exist.yaml"
-    assert _run_cli(["--all", str(missing)]).returncode == 4
+def _bright_line_py(tmp_path):
+    path = tmp_path / "jira123_fix.py"
+    path.write_text("VALUE = 1\n")
+    return path
+
+
+def _missing_yaml(tmp_path):
+    return tmp_path / "does_not_exist.yaml"
+
+
+@pytest.mark.parametrize(
+    "build_file, expected_code",
+    [(_clean_yaml, 0), (_advisory_yaml, 1), (_bright_line_py, 3), (_missing_yaml, 4)],
+    ids=["clean", "advisory", "bright_line", "internal_error"],
+)
+def test_cli_exit_code_matches_the_finding_severity(build_file, expected_code, tmp_path):
+    path = build_file(tmp_path)
+    assert _run_cli(["--all", str(path)]).returncode == expected_code
+
+
+def _undeclared_public_symbols(module):
+    declared = set(PUBLIC_FUNCTIONS) | set(PUBLIC_CONSTANTS) | set(PUBLIC_EXCEPTIONS)
+    actual = {
+        name for name in dir(module)
+        if not name.startswith("_") and not inspect.ismodule(getattr(module, name))
+    }
+    return actual - declared
+
+
+def test_declared_surface_covers_every_public_symbol_on_the_module():
+    undeclared = _undeclared_public_symbols(guard)
+    assert not undeclared, f"public symbols on the module are not declared: {undeclared}"
+
+
+def test_exhaustiveness_check_catches_a_new_public_function_left_undeclared():
+    added = _load_module(name="comment_intent_guard_extra_symbol_for_test")
+    added.a_new_undeclared_function = lambda: None
+
+    undeclared = _undeclared_public_symbols(added)
+
+    assert undeclared == {"a_new_undeclared_function"}
+
+
+def test_shape_check_catches_a_finding_producer_returning_bare_strings():
+    mutated = _load_module(name="comment_intent_guard_bare_strings_for_test")
+    mutated.find_misplaced_rationale = lambda text: ["a bare string finding with no span at all"]
+
+    problems = _shape_problems(mutated.find_misplaced_rationale("irrelevant"))
+
+    assert problems
 
 
 def test_existence_check_catches_a_declared_function_renamed_on_the_module():
