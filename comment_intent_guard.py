@@ -338,14 +338,66 @@ def _external_ids_in(text):
     return [m for m in _EXTERNAL_ID_RE.findall(text) if not _is_standards_token(m)]
 
 
-_ID_TOKEN_RE = re.compile(r"^[a-z]{2,4}\d{1,3}[a-z]?$")
+_ID_TOKEN_RE = re.compile(r"^(?P<prefix>[a-z]{2,4})\d{1,3}[a-z]?$")
+
+_REPO_CONFIG_FILENAME = ".comment-intent-guard.json"
+_ID_ALLOWLIST_CONFIG_KEY = "id_prefix_allowlist"
+_ID_PREFIX_SHAPE_RE = re.compile(r"^[a-z]{2,4}$")
 
 
-def _id_tokens_in_identifier(identifier):
-    return [
-        part for part in identifier.split("_")
-        if _ID_TOKEN_RE.match(part) and not _is_standards_token(part)
-    ]
+def _find_repo_config_path(file_path):
+    directory = posixpath.dirname(posixpath.abspath(file_path))
+    while True:
+        candidate = posixpath.join(directory, _REPO_CONFIG_FILENAME)
+        if posixpath.isfile(candidate):
+            return candidate
+        parent = posixpath.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+
+
+def _malformed_repo_config(config_path, reason):
+    _warn(
+        f"malformed repo config at {config_path} ({reason}) - id allowlist "
+        "disabled for this repo, bright line stays enforced"
+    )
+    return frozenset()
+
+
+def _repo_id_prefix_allowlist(file_path):
+    config_path = _find_repo_config_path(file_path)
+    if config_path is None:
+        return frozenset()
+    try:
+        with open(config_path, encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (OSError, ValueError) as exc:
+        return _malformed_repo_config(config_path, f"{type(exc).__name__}: {exc}")
+    if not isinstance(config, dict):
+        return _malformed_repo_config(config_path, "top-level JSON value is not an object")
+    if _ID_ALLOWLIST_CONFIG_KEY not in config:
+        return frozenset()
+    prefixes = config[_ID_ALLOWLIST_CONFIG_KEY]
+    if not (isinstance(prefixes, list) and all(
+        isinstance(p, str) and _ID_PREFIX_SHAPE_RE.match(p) for p in prefixes
+    )):
+        return _malformed_repo_config(
+            config_path, f"'{_ID_ALLOWLIST_CONFIG_KEY}' must be a list of 2-4 letter lowercase prefixes"
+        )
+    return frozenset(prefixes)
+
+
+def _id_tokens_in_identifier(identifier, allowed_prefixes):
+    tokens = []
+    for part in identifier.split("_"):
+        match = _ID_TOKEN_RE.match(part)
+        if match is None or _is_standards_token(part):
+            continue
+        if match.group("prefix") in allowed_prefixes:
+            continue
+        tokens.append(part)
+    return tokens
 
 
 def _external_id_violation(identifier, where, row):
@@ -415,17 +467,18 @@ def count_test_function_docstrings(text):
     return sum(1 for _ in _test_functions_opening_with_a_docstring(text))
 
 
-def _filename_violations(file_path):
+def _filename_violations(file_path, allowed_prefixes):
     stem = posixpath.splitext(posixpath.basename(file_path))[0]
     return [
         (_external_id_violation(found, "the filename", 1), (1, 1))
-        for found in _id_tokens_in_identifier(stem) + _external_ids_in(stem)
+        for found in _id_tokens_in_identifier(stem, allowed_prefixes) + _external_ids_in(stem)
     ]
 
 
 def find_blocking_violations(text, file_path):
     lines = _split_rows(text)
-    violations = _filename_violations(file_path)
+    allowed_prefixes = _repo_id_prefix_allowlist(file_path)
+    violations = _filename_violations(file_path, allowed_prefixes)
     for chunk in _tokenize_with_resync(text):
         for i in range(len(chunk)):
             tok = chunk[i]
@@ -441,7 +494,7 @@ def find_blocking_violations(text, file_path):
             row = chunk[i + 1].start[0]
             violations.extend(
                 (_external_id_violation(found, "a test name", row), (row, row))
-                for found in _id_tokens_in_identifier(test_name)
+                for found in _id_tokens_in_identifier(test_name, allowed_prefixes)
             )
     violations.extend(
         (_test_docstring_violation(name, row), (row, row))
