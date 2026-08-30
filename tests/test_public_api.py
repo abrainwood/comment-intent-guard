@@ -19,7 +19,7 @@ def _load_module(module_path=_MODULE_PATH, name="comment_intent_guard_under_test
 guard = _load_module()
 
 
-# home-assistant-config's differential test imports find_misplaced_rationale
+# A private downstream consumer's differential test imports find_misplaced_rationale
 # and DOCSTRING_LINE_THRESHOLD from this module directly - keep both listed
 # below whenever this surface changes.
 PUBLIC_FUNCTIONS = {
@@ -93,7 +93,7 @@ def _misplaced_rationale_sample():
     return guard.find_misplaced_rationale(_oversize_docstring_text())
 
 
-# home-assistant-config's differential test also couples to this literal
+# The same downstream consumer's differential test also couples to this literal
 # message prefix from find_misplaced_rationale, via f.startswith(...) -
 # renaming the wording (not just the symbol) is a breaking change too.
 CONSUMER_MESSAGE_PREFIXES = {

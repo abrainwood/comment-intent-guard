@@ -33,7 +33,7 @@ jobs:
       matrix:
         # 3.12 is the floor - the Python analysis needs tokenize's f-string
         # token support. 3.13 is the current stable release. 3.14 is
-        # home-assistant-config's pinned consumer version.
+        # the pinned version of a private downstream consumer.
         python-version: ["3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v4

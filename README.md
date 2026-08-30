@@ -47,7 +47,7 @@ as exit code 4; YAML findings are unaffected. CI runs the suite on 3.12,
 `tests/test_public_api.py` is a contract test over this module's public
 surface. Known external consumers:
 
-- `home-assistant-config`'s differential comment-guard test imports
+- A private downstream consumer's differential comment-guard test imports
   `find_misplaced_rationale` and `DOCSTRING_LINE_THRESHOLD` directly, and
   also matches the returned message text against the `"Docstring spans"`
   prefix - not just the symbol name.
