@@ -1338,7 +1338,7 @@ def test_yaml_escaped_double_quote_does_not_prematurely_close_the_string():
 
 
 def test_yaml_apostrophe_in_a_plain_scalar_does_not_suppress_a_trailing_comment():
-    text = "name: Andrew's house  # fixed on 2026-05-22\n"
+    text = "name: the neighbour's house  # fixed on 2026-05-22\n"
 
     findings = guard.find_yaml_findings(text)
 
