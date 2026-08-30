@@ -1748,3 +1748,205 @@ def test_every_yaml_finding_is_a_message_and_a_valid_line_span():
     assert len(findings) == 7
     for finding in findings:
         _assert_finding_shape(finding, line_count)
+
+
+def _write_repo_config(repo_root, config):
+    (repo_root / guard._REPO_CONFIG_FILENAME).write_text(json.dumps(config))
+
+
+def test_a_filename_id_token_whose_prefix_is_repo_allowlisted_is_not_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert violations == []
+
+
+def test_a_filename_id_token_whose_prefix_is_not_repo_allowlisted_is_still_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "test_mg1_cool_demand.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("mg1" in v for v, _ in violations)
+
+
+def test_two_repos_with_different_allowlists_are_scoped_independently_in_the_same_process(tmp_path):
+    sp_repo = tmp_path / "sp_repo"
+    mg_repo = tmp_path / "mg_repo"
+    for repo, prefix in ((sp_repo, "sp"), (mg_repo, "mg")):
+        (repo / "tests").mkdir(parents=True)
+        _write_repo_config(repo, {"id_prefix_allowlist": [prefix]})
+
+    sp_file = sp_repo / "tests" / "test_gap_sp1.py"
+    mg_file = mg_repo / "tests" / "test_gap_mg1.py"
+
+    sp_violations = guard.find_blocking_violations("VALUE = 1\n", str(sp_file))
+    mg_violations = guard.find_blocking_violations("VALUE = 1\n", str(mg_file))
+    sp_in_mg_repo_violations = guard.find_blocking_violations(
+        "VALUE = 1\n", str(mg_repo / "tests" / "test_gap_sp1.py")
+    )
+
+    assert sp_violations == []
+    assert mg_violations == []
+    assert any("sp1" in v for v, _ in sp_in_mg_repo_violations)
+
+
+def test_a_repo_with_no_declared_config_keeps_the_id_rule_fully_enforced(tmp_path):
+    target = tmp_path / "tests" / "test_gap_sp1.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp1" in v for v, _ in violations)
+
+
+def test_an_unparseable_repo_config_leaves_the_id_rule_enforced_and_warns(tmp_path, capsys):
+    (tmp_path / guard._REPO_CONFIG_FILENAME).write_text("{not valid json")
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp6" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_a_repo_config_with_a_string_instead_of_a_list_of_prefixes_leaves_the_id_rule_enforced_and_warns(
+    tmp_path, capsys
+):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": "sp"})
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp6" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_an_unreadable_repo_config_leaves_the_id_rule_enforced_and_warns(tmp_path, capsys):
+    config_path = tmp_path / guard._REPO_CONFIG_FILENAME
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    config_path.chmod(0o000)
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    try:
+        violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+    finally:
+        config_path.chmod(0o644)
+
+    assert any("sp6" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_a_repo_config_that_is_a_json_list_instead_of_an_object_leaves_the_id_rule_enforced_and_warns(
+    tmp_path, capsys
+):
+    _write_repo_config(tmp_path, ["sp"])
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp6" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_a_repo_config_with_one_badly_shaped_prefix_rejects_the_whole_list_and_warns(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["SP", "mg"]})
+    sp_target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    sp_target.parent.mkdir(parents=True)
+    mg_target = tmp_path / "tests" / "test_gap_mg1.py"
+
+    sp_violations = guard.find_blocking_violations("VALUE = 1\n", str(sp_target))
+    warning = capsys.readouterr().err
+    mg_violations = guard.find_blocking_violations("VALUE = 1\n", str(mg_target))
+
+    assert any("sp1" in v for v, _ in sp_violations)
+    assert any("mg1" in v for v, _ in mg_violations)
+    assert "malformed" in warning.lower()
+
+
+def test_a_hyphenated_docstring_id_whose_prefix_is_repo_allowlisted_is_not_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["mg"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""MG-1 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+
+
+def test_a_hyphenated_docstring_id_whose_prefix_is_not_repo_allowlisted_is_still_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["mg"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""SP-9 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert any("SP-9" in v for v, _ in violations)
+
+
+def test_one_declared_lowercase_prefix_clears_both_the_filename_and_hyphenated_id_forms(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    target.parent.mkdir(parents=True)
+    source = '"""SP-9 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+
+
+def test_a_six_letter_prefix_is_a_valid_allowlist_entry_and_clears_its_hyphenated_id(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["zscbay"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""ZSCBAY-1 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+    assert capsys.readouterr().err == ""
+
+
+def test_a_seven_letter_prefix_is_still_rejected_as_malformed(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["zscbays"]})
+    target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp1" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_e2e_hook_does_not_deny_a_new_file_whose_repo_allowlists_its_id_prefix(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(target), "content": "VALUE = 1\n"},
+    }
+
+    result = _run_hook(payload)
+
+    assert result.stdout.strip() == ""
+
+
+def test_e2e_cli_all_mode_exits_clean_on_a_file_whose_repo_allowlists_its_id_prefix(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    py_file = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    py_file.parent.mkdir()
+    py_file.write_text("VALUE = 1\n")
+
+    result = _run_cli(["--all", str(py_file)])
+
+    assert result.returncode == 0

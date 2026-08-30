@@ -35,6 +35,37 @@ files. `--base <ref>` restricts findings to lines added since `<ref>` (via
 | 3 | A bright-line violation was found |
 | 4 | Internal error (unreadable file, unsupported Python version, ...) |
 
+## Per-repo id allowlist
+
+Two bright lines flag identifier-shaped tokens as external ids: `_ID_TOKEN_RE`
+for a lowercase `sp1`-style token in a filename or test name, and
+`_EXTERNAL_ID_RE` for an uppercase, hyphenated `SP-9`-style token in a
+docstring, on the theory that nobody reading the code can tell what either
+means. Some repos have their own domain vocabulary that happens to match
+those shapes - a mandated naming convention for a golden-case corpus, say -
+and isn't an external ticket reference at all. Rather than hardcode one
+repo's vocabulary into this shared tool, a repo can declare its own.
+
+Drop a `.comment-intent-guard.json` file anywhere from the checked file's
+directory up to the filesystem root (its nearest ancestor wins):
+
+```json
+{"id_prefix_allowlist": ["sp", "mg"]}
+```
+
+Each entry is a 2-6 letter lowercase prefix - the letters before the digits
+in `sp1`, or before the hyphen in `SP-9` (compared case-insensitively, so one
+declared `"sp"` clears both forms). A token matching either rule whose
+prefix is on the list is no longer a violation; every other bright line, and
+every token whose prefix isn't listed, is unaffected. This applies
+identically in hook mode, `--base`, and `--all`, since discovery walks up
+from the file being checked, not from the invoking process's own location.
+
+A repo with no such file gets today's behaviour, unchanged. A file that
+exists but can't be read or parsed, or whose shape is wrong, does **not**
+disable the rule - it's logged as a warning and treated as if no allowlist
+were declared, so the bright line stays fully enforced.
+
 ## Requirements
 
 Python 3.12 or newer - the Python analysis uses `tokenize`'s f-string token
