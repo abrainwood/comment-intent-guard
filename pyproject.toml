@@ -3,4 +3,10 @@ line-length = 130
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B"]
+# D (docstrings) is dropped deliberately - the guard bright-line-denies
+# docstrings on test functions, so the two rule sets would fight.
+select = ["E", "F", "I", "UP", "B", "ERA", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+# The CLI writes its findings to stdout/stderr via print().
+"comment_intent_guard.py" = ["T20"]
