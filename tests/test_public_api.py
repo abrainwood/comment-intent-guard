@@ -26,6 +26,8 @@ PUBLIC_FUNCTIONS = {
     "find_misplaced_rationale": ("text",),
     "find_yaml_findings": ("text",),
     "find_blocking_violations": ("text", "file_path"),
+    "find_issue_reference_violations": ("text",),
+    "find_yaml_issue_reference_violations": ("text",),
     "count_test_function_docstrings": ("text",),
     "count_comment_and_code_lines": ("text",),
     "aggregate_density_finding": ("comment_lines", "code_lines"),
