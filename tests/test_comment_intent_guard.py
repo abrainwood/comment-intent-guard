@@ -307,6 +307,67 @@ def test_english_hex_looking_words_are_not_flagged_as_a_sha():
     assert findings == []
 
 
+def test_short_comment_with_an_issue_reference_is_flagged():
+    text = "# Issue #91's own branch point\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings
+
+
+def test_yaml_description_block_scalar_with_a_leading_ordinal_is_not_flagged_as_an_issue_reference():
+    text = (
+        "description: >-\n"
+        "  #91 second step in the sequence\n"
+        "  #92 third step\n"
+        "next_key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_jinja_comment_with_an_issue_reference_is_flagged():
+    text = "{# issue #91: the direction can flip while the hold is active #}\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert any("issue" in f.lower() for f, _ in findings)
+
+
+def test_yaml_jinja_comment_with_no_issue_reference_is_not_flagged():
+    text = "{# guards against the hold flipping mid-cycle #}\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_hash_followed_by_a_letter_is_not_an_issue_reference():
+    text = "# see #abc for the naming scheme\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_hash_followed_by_whitespace_then_digits_is_not_an_issue_reference():
+    text = "# retry budget is # 91 units, unrelated to any issue\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_shebang_with_a_hash_digit_shape_on_the_next_line_is_not_confused_for_a_shebang():
+    text = "#!/usr/bin/env python3\n# closes #91\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any("issue" in f.lower() for f, _ in findings)
+
+
 def test_single_letter_unit_requires_no_space_before_it():
     text = "# see step 3 m of the plan for context\n"
 

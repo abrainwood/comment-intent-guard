@@ -31,19 +31,31 @@ _HEX_DIGIT_LOOKAHEAD = r"(?=[0-9a-fA-F]*[0-9])"
 _SHA_RE = re.compile(
     rf"\b{_HEX_LETTER_LOOKAHEAD}{_HEX_DIGIT_LOOKAHEAD}[0-9a-fA-F]{{7,40}}\b"
 )
+_ISSUE_REF_RE = re.compile(r"#\d+\b")
 _SHEBANG_RE = re.compile(r"^#!")
 _ENCODING_RE = re.compile(r"coding[:=]\s*[-\w.]+")
 
 
+def _has_inline_issue_reference(text):
+    for line in text.split("\n"):
+        indent = len(line) - len(line.lstrip())
+        if any(m.start() > indent for m in _ISSUE_REF_RE.finditer(line)):
+            return True
+    return False
+
+
 def _has_evidence_marker(text):
-    return bool(_DATE_RE.search(text) or _UNIT_RE.search(text) or _SHA_RE.search(text))
+    return bool(
+        _DATE_RE.search(text) or _UNIT_RE.search(text) or _SHA_RE.search(text)
+        or _has_inline_issue_reference(text)
+    )
 
 
 def _evidence_finding(kind, start):
     return (
-        f"{kind} near line {start + 1} contains a date, measurement, or SHA. "
-        "That looks like a review finding or timing discharged into source - "
-        "move it to the issue, PR, or design doc."
+        f"{kind} near line {start + 1} contains a date, measurement, SHA, or "
+        "issue reference. That looks like a review finding or timing "
+        "discharged into source - move it to the issue, PR, or design doc."
     )
 
 
