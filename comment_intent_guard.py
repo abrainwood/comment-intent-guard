@@ -31,6 +31,7 @@ _HEX_DIGIT_LOOKAHEAD = r"(?=[0-9a-fA-F]*[0-9])"
 _SHA_RE = re.compile(
     rf"\b{_HEX_LETTER_LOOKAHEAD}{_HEX_DIGIT_LOOKAHEAD}[0-9a-fA-F]{{7,40}}\b"
 )
+_ISSUE_REF_RE = re.compile(r"#\d+\b")
 _SHEBANG_RE = re.compile(r"^#!")
 _ENCODING_RE = re.compile(r"coding[:=]\s*[-\w.]+")
 
@@ -44,6 +45,22 @@ def _evidence_finding(kind, start):
         f"{kind} near line {start + 1} contains a date, measurement, or SHA. "
         "That looks like a review finding or timing discharged into source - "
         "move it to the issue, PR, or design doc."
+    )
+
+
+def _has_inline_issue_reference(text):
+    for line in text.split("\n"):
+        indent = len(line) - len(line.lstrip())
+        if any(m.start() > indent for m in _ISSUE_REF_RE.finditer(line)):
+            return True
+    return False
+
+
+def _issue_reference_violation(kind, start):
+    return (
+        f"BLOCKED - {kind} near line {start + 1} contains an issue reference. "
+        "That's a pointer that rots - name the behaviour instead; the issue "
+        "lives in the commit message or PR, not source."
     )
 
 
@@ -163,7 +180,7 @@ def _fstring_end_index(tokens, open_idx):
     return None
 
 
-def _flush_comment_run(findings, run_start, run_end, run_lines):
+def _flush_comment_run(findings, blocking, run_start, run_end, run_lines):
     if run_start is not None:
         run_len = len(run_lines)
         span = (run_start + 1, run_end + 1)
@@ -176,12 +193,15 @@ def _flush_comment_run(findings, run_start, run_end, run_lines):
                 "meaning instead?",
                 span,
             ))
-        if _has_evidence_marker("\n".join(run_lines)):
+        run_text = "\n".join(run_lines)
+        if _has_evidence_marker(run_text):
             findings.append((_evidence_finding("Comment", run_start), span))
+        if _has_inline_issue_reference(run_text):
+            blocking.append((_issue_reference_violation("Comment", run_start), span))
     return None, None, []
 
 
-def _docstring_like_finding(findings, lines, start_li, end_li):
+def _docstring_like_finding(findings, blocking, lines, start_li, end_li):
     block_len = end_li - start_li + 1
     span = (start_li + 1, end_li + 1)
     if block_len > DOCSTRING_LINE_THRESHOLD:
@@ -195,6 +215,8 @@ def _docstring_like_finding(findings, lines, start_li, end_li):
     block_text = "\n".join(lines[start_li:end_li + 1])
     if _has_evidence_marker(block_text):
         findings.append((_evidence_finding("Docstring", start_li), span))
+    if _has_inline_issue_reference(block_text):
+        blocking.append((_issue_reference_violation("Docstring", start_li), span))
 
 
 _NON_CONTENT_TOKENS = (
@@ -233,7 +255,7 @@ def _magic_literal_finding(row):
     )
 
 
-def find_misplaced_rationale(text):
+def _scan_python_comments(text):
     lines = _split_rows(text)
 
     if sys.version_info < _MIN_TOKENIZE_FSTRING_VERSION:
@@ -246,6 +268,7 @@ def find_misplaced_rationale(text):
         )
 
     findings = []
+    blocking = []
     run_start = None
     run_end = None
     run_lines = []
@@ -273,9 +296,11 @@ def find_misplaced_rationale(text):
                     run_end = li
                     run_lines.append(line_text)
                 else:
-                    run_start, run_end, run_lines = _flush_comment_run(findings, run_start, run_end, run_lines)
+                    run_start, run_end, run_lines = _flush_comment_run(findings, blocking, run_start, run_end, run_lines)
                     if _has_evidence_marker(tok.string):
                         findings.append((_evidence_finding("Comment", li), (li + 1, li + 1)))
+                    if _has_inline_issue_reference(tok.string):
+                        blocking.append((_issue_reference_violation("Comment", li), (li + 1, li + 1)))
                 i += 1
                 continue
 
@@ -283,11 +308,11 @@ def find_misplaced_rationale(text):
                 i += 1
                 continue
 
-            run_start, run_end, run_lines = _flush_comment_run(findings, run_start, run_end, run_lines)
+            run_start, run_end, run_lines = _flush_comment_run(findings, blocking, run_start, run_end, run_lines)
 
             if ttype == tokenize.STRING:
                 if _opens_its_line(lines, tok) and _looks_like_triple_quoted(tok.string):
-                    _docstring_like_finding(findings, lines, tok.start[0] - 1, tok.end[0] - 1)
+                    _docstring_like_finding(findings, blocking, lines, tok.start[0] - 1, tok.end[0] - 1)
                 i += 1
                 continue
 
@@ -296,7 +321,7 @@ def find_misplaced_rationale(text):
                 if end_idx is not None:
                     if _opens_its_line(lines, tok) and _looks_like_triple_quoted(tok.string):
                         _docstring_like_finding(
-                            findings, lines, tok.start[0] - 1, chunk[end_idx].end[0] - 1
+                            findings, blocking, lines, tok.start[0] - 1, chunk[end_idx].end[0] - 1
                         )
                     i = end_idx + 1
                 else:
@@ -305,9 +330,19 @@ def find_misplaced_rationale(text):
 
             i += 1
 
-        run_start, run_end, run_lines = _flush_comment_run(findings, run_start, run_end, run_lines)
+        run_start, run_end, run_lines = _flush_comment_run(findings, blocking, run_start, run_end, run_lines)
 
+    return blocking, findings
+
+
+def find_misplaced_rationale(text):
+    _, findings = _scan_python_comments(text)
     return findings
+
+
+def find_issue_reference_violations(text):
+    blocking, _ = _scan_python_comments(text)
+    return blocking
 
 
 _TEST_FUNCTION_PREFIX = "test_"
@@ -586,7 +621,7 @@ def _comment_run_finding(run_len, run_start):
     )
 
 
-def _flush_yaml_comment_run(findings, run_start, run_lines):
+def _flush_yaml_comment_run(findings, blocking, run_start, run_lines):
     if run_start is not None:
         span = (run_start + 1, run_start + len(run_lines))
         is_dead_config = len(run_lines) > YAML_COMMENT_RUN_LINE_THRESHOLD and _looks_like_dead_config(run_lines)
@@ -595,8 +630,11 @@ def _flush_yaml_comment_run(findings, run_start, run_lines):
                 findings.append((_dead_config_finding(len(run_lines), run_start), span))
             else:
                 findings.append((_comment_run_finding(len(run_lines), run_start), span))
-        if not is_dead_config and _has_evidence_marker("\n".join(run_lines)):
+        run_text = "\n".join(run_lines)
+        if not is_dead_config and _has_evidence_marker(run_text):
             findings.append((_evidence_finding("Comment", run_start), span))
+        if not is_dead_config and _has_inline_issue_reference(run_text):
+            blocking.append((_issue_reference_violation("Comment", run_start), span))
     return None, []
 
 
@@ -648,6 +686,7 @@ def _jinja_block_finding(block_len, start_li):
 
 def _jinja_comment_findings(text):
     findings = []
+    blocking = []
     for match in _JINJA_COMMENT_RE.finditer(text):
         start_li = text[:match.start()].count("\n")
         block_len = match.group().count("\n") + 1
@@ -656,14 +695,16 @@ def _jinja_comment_findings(text):
             findings.append((_jinja_block_finding(block_len, start_li), span))
         if _has_evidence_marker(match.group()):
             findings.append((_evidence_finding("Jinja comment block", start_li), span))
-    return findings
+        if _has_inline_issue_reference(match.group()):
+            blocking.append((_issue_reference_violation("Jinja comment block", start_li), span))
+    return blocking, findings
 
 
 YAML_DESCRIPTION_LINE_THRESHOLD = 12
 _DESCRIPTION_KEY = "description"
 
 
-def _description_block_finding(findings, lines, header_li, block_start, block_end):
+def _description_block_finding(findings, blocking, lines, header_li, block_start, block_end):
     if block_end < block_start:
         return
     block_len = block_end - block_start + 1
@@ -679,11 +720,13 @@ def _description_block_finding(findings, lines, header_li, block_start, block_en
     block_text = "\n".join(lines[block_start:block_end + 1])
     if _has_evidence_marker(block_text):
         findings.append((_evidence_finding("Description block scalar", block_start), span))
+    if _has_inline_issue_reference(block_text):
+        blocking.append((_issue_reference_violation("Description block scalar", block_start), span))
 
 
-def find_yaml_findings(text):
+def _scan_yaml_comments(text):
     lines = _split_rows(text)
-    findings = list(_jinja_comment_findings(text))
+    blocking, findings = _jinja_comment_findings(text)
     run_start = None
     run_lines = []
 
@@ -692,12 +735,12 @@ def find_yaml_findings(text):
         line = lines[li]
         header = _block_scalar_header(line)
         if header is not None:
-            run_start, run_lines = _flush_yaml_comment_run(findings, run_start, run_lines)
+            run_start, run_lines = _flush_yaml_comment_run(findings, blocking, run_start, run_lines)
             header_indent, key = header
             block_start = li + 1
             last_content, next_li = _block_scalar_extent(lines, header_indent, block_start)
             if key == _DESCRIPTION_KEY:
-                _description_block_finding(findings, lines, li, block_start, last_content)
+                _description_block_finding(findings, blocking, lines, li, block_start, last_content)
             li = next_li
             continue
 
@@ -709,13 +752,27 @@ def find_yaml_findings(text):
             li += 1
             continue
 
-        run_start, run_lines = _flush_yaml_comment_run(findings, run_start, run_lines)
-        if col is not None and _has_evidence_marker(line[col:]):
-            findings.append((_evidence_finding("Comment", li), (li + 1, li + 1)))
+        run_start, run_lines = _flush_yaml_comment_run(findings, blocking, run_start, run_lines)
+        if col is not None:
+            comment_text = line[col:]
+            if _has_evidence_marker(comment_text):
+                findings.append((_evidence_finding("Comment", li), (li + 1, li + 1)))
+            if _has_inline_issue_reference(comment_text):
+                blocking.append((_issue_reference_violation("Comment", li), (li + 1, li + 1)))
         li += 1
 
-    run_start, run_lines = _flush_yaml_comment_run(findings, run_start, run_lines)
+    run_start, run_lines = _flush_yaml_comment_run(findings, blocking, run_start, run_lines)
+    return blocking, findings
+
+
+def find_yaml_findings(text):
+    _, findings = _scan_yaml_comments(text)
     return findings
+
+
+def find_yaml_issue_reference_violations(text):
+    blocking, _ = _scan_yaml_comments(text)
+    return blocking
 
 
 _STATE_COMMENT_KEY = "comment_lines"
@@ -853,13 +910,13 @@ def _findings_for_file(file_path, text):
     if file_path.endswith(".py"):
         blocking = find_blocking_violations(text, file_path)
         try:
-            advisory = find_misplaced_rationale(text)
+            issue_blocking, advisory = _scan_python_comments(text)
         except AnalysisUnavailable as exc:
             exc.blocking = blocking
             raise
-        return blocking, advisory
+        return blocking + issue_blocking, advisory
     if file_path.endswith((".yaml", ".yml")):
-        return [], find_yaml_findings(text)
+        return find_yaml_issue_reference_violations(text), find_yaml_findings(text)
     return [], []
 
 
@@ -1000,9 +1057,20 @@ def _hook_main():
                 print(json.dumps(_deny_payload(violations)))
                 return
 
-            findings = [message for message, _ in find_misplaced_rationale(text)]
+            issue_blocking, advisory_pairs = _scan_python_comments(text)
+            violations = [message for message, _ in issue_blocking]
+            if violations:
+                print(json.dumps(_deny_payload(violations)))
+                return
+
+            findings = [message for message, _ in advisory_pairs]
             findings.extend(_density_findings(payload.get("session_id"), text))
         else:
+            violations = [message for message, _ in find_yaml_issue_reference_violations(text)]
+            if violations:
+                print(json.dumps(_deny_payload(violations)))
+                return
+
             findings = [message for message, _ in find_yaml_findings(text)]
 
         if not findings:

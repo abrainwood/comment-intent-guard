@@ -70,6 +70,39 @@ def test_e2e_edit_py_file_with_evidence_marker_emits_advisory():
         "review finding" in output["hookSpecificOutput"]["additionalContext"].lower()
 
 
+def test_e2e_python_comment_with_an_issue_reference_denies_the_edit():
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "old_string": "pass\n",
+            "new_string": "# Issue #91's own branch point\npass\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_e2e_yaml_jinja_comment_with_an_issue_reference_denies_the_edit():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/template_sensors.yaml",
+            "content": "value_template: >-\n  {# issue #91: the direction can flip while the hold is active #}\n  {{ x }}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
 def test_e2e_non_python_file_is_skipped_even_with_oversize_hash_run():
     prose_lines = "\n".join(f"# reason {i}" for i in range(20))
     payload = {
@@ -118,7 +151,7 @@ def test_e2e_edit_yaml_file_only_analyses_the_new_string_fragment():
                 "# reason five\n"
                 "old_key: value\n"
             ),
-            "new_string": "timeout: 8  # fixed on 2026-05-22 (issue #32)\n",
+            "new_string": "timeout: 8  # fixed on 2026-05-22\n",
         },
     }
 
@@ -305,6 +338,76 @@ def test_english_hex_looking_words_are_not_flagged_as_a_sha():
     findings = guard.find_misplaced_rationale(text)
 
     assert findings == []
+
+
+def test_short_comment_with_an_issue_reference_is_blocked():
+    text = "# Issue #91's own branch point\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert violations
+    assert any("BLOCKED" in v for v, _ in violations)
+
+
+def test_short_comment_with_an_issue_reference_is_not_also_an_advisory_finding():
+    text = "# Issue #91's own branch point\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_yaml_description_block_scalar_with_a_leading_ordinal_is_not_flagged_as_an_issue_reference():
+    text = (
+        "description: >-\n"
+        "  #91 second step in the sequence\n"
+        "  #92 third step\n"
+        "next_key: value\n"
+    )
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert violations == []
+
+
+def test_yaml_jinja_comment_with_an_issue_reference_is_blocked():
+    text = "{# issue #91: the direction can flip while the hold is active #}\n"
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert any("BLOCKED" in v for v, _ in violations)
+
+
+def test_yaml_jinja_comment_with_no_issue_reference_is_not_blocked():
+    text = "{# guards against the hold flipping mid-cycle #}\n"
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert violations == []
+
+
+def test_hash_followed_by_a_letter_is_not_an_issue_reference():
+    text = "# see #abc for the naming scheme\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert violations == []
+
+
+def test_hash_followed_by_whitespace_then_digits_is_not_an_issue_reference():
+    text = "# retry budget is # 91 units, unrelated to any issue\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert violations == []
+
+
+def test_shebang_with_a_hash_digit_shape_on_the_next_line_is_still_blocked_as_an_issue_reference():
+    text = "#!/usr/bin/env python3\n# closes #91\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert any("BLOCKED" in v for v, _ in violations)
 
 
 def test_single_letter_unit_requires_no_space_before_it():
@@ -1176,6 +1279,16 @@ def test_cli_all_mode_on_yaml_file_reports_findings_and_exits_nonzero(tmp_path):
     assert "Comment run of 5" in result.stdout
 
 
+def test_cli_all_mode_on_yaml_file_with_an_issue_reference_denies_and_exits_bright_line(tmp_path):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text("timeout: 8  # closes #91\n")
+
+    result = _run_cli(["--all", str(yaml_file)])
+
+    assert result.returncode == guard._EXIT_BRIGHT_LINE
+    assert "issue reference" in result.stdout
+
+
 def test_cli_all_mode_with_no_findings_exits_zero(tmp_path):
     yaml_file = tmp_path / "config.yaml"
     yaml_file.write_text("key: value\n")
@@ -1634,6 +1747,62 @@ def test_cli_exits_4_when_running_under_a_pre_3_12_interpreter(tmp_path, capsys)
 
     assert returncode == 4
     assert "3.12" in capsys.readouterr().err
+
+
+def test_hook_fails_open_when_issue_reference_scanning_itself_crashes(monkeypatch, capsys):
+    import io
+
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/template_sensors.yaml",
+            "content": "{# issue #91: whatever #}\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    with patch.object(guard, "find_yaml_issue_reference_violations", side_effect=RuntimeError("boom")):
+        guard._hook_main()
+
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_hook_still_denies_an_external_id_violation_when_issue_reference_analysis_is_unavailable(monkeypatch, capsys):
+    import io
+
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/tests/test_thing.py",
+            "content": 'def test_thing():\n    """Checks the thing."""\n    assert True\n',
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "test name" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_hook_fails_open_when_only_issue_reference_analysis_is_unavailable(monkeypatch, capsys):
+    import io
+
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "content": "def add(a, b):\n    return a + b\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        guard._hook_main()
+
+    assert capsys.readouterr().out.strip() == ""
 
 
 def test_cli_still_reports_a_bright_line_violation_when_analysis_is_unavailable(tmp_path, capsys):
