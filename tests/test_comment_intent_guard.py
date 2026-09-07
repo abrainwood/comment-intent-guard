@@ -2119,3 +2119,52 @@ def test_e2e_cli_all_mode_exits_clean_on_a_file_whose_repo_allowlists_its_id_pre
     result = _run_cli(["--all", str(py_file)])
 
     assert result.returncode == 0
+
+
+def test_filename_only_allowlist_permits_the_filename_but_still_blocks_the_same_prefix_in_a_docstring(tmp_path):
+    _write_repo_config(tmp_path, {"filename_only_id_prefix_allowlist": ["gh"]})
+    target = tmp_path / "tests" / "test_gh553_oracle_tp_smoke.py"
+    target.parent.mkdir(parents=True)
+    source = '"""GH-553 regression."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert not any("the filename" in v for v, _ in violations)
+    assert any("a docstring" in v and "GH-553" in v for v, _ in violations)
+
+
+def test_filename_only_allowlist_permits_the_filename_but_still_blocks_the_same_prefix_in_a_test_name(tmp_path):
+    _write_repo_config(tmp_path, {"filename_only_id_prefix_allowlist": ["gh"]})
+    target = tmp_path / "tests" / "test_gh553_oracle_tp_smoke.py"
+    target.parent.mkdir(parents=True)
+    source = "def test_gh553_regression():\n    pass\n"
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert not any("the filename" in v for v, _ in violations)
+    assert any("a test name" in v and "gh553" in v for v, _ in violations)
+
+
+def test_a_malformed_filename_only_allowlist_leaves_the_filename_check_enforced_and_warns(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"filename_only_id_prefix_allowlist": "gh"})
+    target = tmp_path / "tests" / "test_gh553_oracle_tp_smoke.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("the filename" in v and "gh553" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_the_two_allowlist_keys_are_independent_the_general_one_still_clears_docstrings_too(tmp_path):
+    _write_repo_config(
+        tmp_path,
+        {"id_prefix_allowlist": ["sp"], "filename_only_id_prefix_allowlist": ["gh"]},
+    )
+    target = tmp_path / "tests" / "test_gh553_sp1_setpoint.py"
+    target.parent.mkdir(parents=True)
+    source = '"""SP-1 golden case."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []

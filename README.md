@@ -66,6 +66,20 @@ exists but can't be read or parsed, or whose shape is wrong, does **not**
 disable the rule - it's logged as a warning and treated as if no allowlist
 were declared, so the bright line stays fully enforced.
 
+A second, narrower key exempts the filename check only, leaving the
+docstring and test-name bright lines at full strength:
+
+```json
+{"filename_only_id_prefix_allowlist": ["gh"]}
+```
+
+Use this when a naming convention puts a real external id in filenames on
+purpose (a `gh<N>_<slug>.py` investigation-artifact convention, say) but the
+id still doesn't belong inside the file's own docstrings, comments, or test
+names - that's still where the rule earns its keep. Same shape, same
+malformed-config fallback as `id_prefix_allowlist`, and the two keys are
+independent: declaring one has no effect on the other.
+
 ## Requirements
 
 Python 3.12 or newer - the Python analysis uses `tokenize`'s f-string token
