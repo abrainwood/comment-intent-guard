@@ -785,6 +785,16 @@ def find_yaml_issue_reference_violations(text):
     return blocking
 
 
+def find_jinja_findings(text):
+    _, findings = _jinja_comment_findings(text)
+    return findings
+
+
+def find_jinja_issue_reference_violations(text):
+    blocking, _ = _jinja_comment_findings(text)
+    return blocking
+
+
 _STATE_COMMENT_KEY = "comment_lines"
 _STATE_CODE_KEY = "code_lines"
 
@@ -927,6 +937,8 @@ def _findings_for_file(file_path, text):
         return blocking + issue_blocking, advisory
     if file_path.endswith((".yaml", ".yml")):
         return find_yaml_issue_reference_violations(text), find_yaml_findings(text)
+    if file_path.endswith((".jinja", ".j2")):
+        return find_jinja_issue_reference_violations(text), find_jinja_findings(text)
     return [], []
 
 
@@ -1054,14 +1066,22 @@ def _hook_main():
             return
         is_python = file_path.endswith(".py")
         is_yaml = file_path.endswith((".yaml", ".yml"))
-        if not (is_python or is_yaml):
+        is_jinja = file_path.endswith((".jinja", ".j2"))
+        if not (is_python or is_yaml or is_jinja):
             return
 
         text = _extract_added_text(tool_name, tool_input)
         if not text:
             return
 
-        if is_python:
+        if is_jinja:
+            violations = [message for message, _ in find_jinja_issue_reference_violations(text)]
+            if violations:
+                print(json.dumps(_deny_payload(violations)))
+                return
+
+            findings = [message for message, _ in find_jinja_findings(text)]
+        elif is_python:
             violations = [message for message, _ in find_blocking_violations(text, file_path)]
             if violations:
                 print(json.dumps(_deny_payload(violations)))
