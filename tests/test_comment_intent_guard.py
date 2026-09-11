@@ -103,6 +103,39 @@ def test_e2e_yaml_jinja_comment_with_an_issue_reference_denies_the_edit():
     assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
 
 
+def test_e2e_standalone_jinja_comment_with_an_issue_reference_denies_the_edit():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.jinja",
+            "content": "{# issue #91: the direction can flip while the hold is active #}\n{{ x }}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_e2e_standalone_jinja_hash_prefixed_lines_are_not_treated_as_yaml_comment_runs():
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    heading_lines = "\n".join(f"# Section {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.jinja",
+            "content": f"{heading_lines}\n{{{{ value }}}}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
 def test_e2e_non_python_file_is_skipped_even_with_oversize_hash_run():
     prose_lines = "\n".join(f"# reason {i}" for i in range(20))
     payload = {
@@ -197,6 +230,21 @@ def test_e2e_clean_python_produces_no_advisory():
         "tool_input": {
             "file_path": "/repo/scripts/thing.py",
             "content": "def add(a, b):\n    return a + b\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_e2e_clean_jinja_produces_no_advisory():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.jinja",
+            "content": "{% set x = 1 %}\n{{ x }}\n",
         },
     }
 
@@ -1287,6 +1335,17 @@ def test_cli_all_mode_on_yaml_file_with_an_issue_reference_denies_and_exits_brig
 
     assert result.returncode == guard._EXIT_BRIGHT_LINE
     assert "issue reference" in result.stdout
+
+
+def test_cli_all_mode_on_jinja_file_with_an_oversize_comment_block_reports_findings(tmp_path):
+    jinja_file = tmp_path / "direction.jinja"
+    body = "\n".join(f"  reason {i}" for i in range(guard.JINJA_BLOCK_LINE_THRESHOLD + 1))
+    jinja_file.write_text(f"{{#\n{body}\n#}}\n{{{{ value }}}}\n")
+
+    result = _run_cli(["--all", str(jinja_file)])
+
+    assert result.returncode == 1
+    assert "Jinja" in result.stdout and "block" in result.stdout
 
 
 def test_cli_all_mode_with_no_findings_exits_zero(tmp_path):
