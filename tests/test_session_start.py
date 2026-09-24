@@ -4,8 +4,9 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
+
+from _clock import FIXED_CLOCK as _FIXED_CLOCK
 
 _SCRIPT_PATH = Path(__file__).resolve().parent.parent / "hooks" / "session_start.py"
 
@@ -38,22 +39,25 @@ def test_session_start_emits_context_naming_the_skill(tmp_path):
     assert "self-documenting-code" in hook_output["additionalContext"]
 
 
-def test_session_start_seeds_a_stamp_for_the_session_id(tmp_path):
+def test_session_start_seeds_a_stamp_for_the_session_id(tmp_path, monkeypatch):
+    module = _import_session_start()
+    monkeypatch.setattr(module.time, "time", lambda: _FIXED_CLOCK)
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
     payload = json.dumps({"session_id": "session-a", "cwd": str(tmp_path), "source": "startup"})
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(payload))
+    monkeypatch.setattr(module.sys, "stdout", io.StringIO())
 
-    result = _run(payload, tmp_path)
+    module.main()
 
-    assert result.returncode == 0
     stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
     stamps = json.loads(stamps_path.read_text())
-    assert "session-a" in stamps
-    assert isinstance(stamps["session-a"], (int, float))
+    assert stamps["session-a"] == int(_FIXED_CLOCK)
 
 
 def test_second_session_start_call_for_the_same_id_leaves_the_stamp_unchanged(tmp_path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    seeded_stamp = 1_700_000_000
+    seeded_stamp = int(_FIXED_CLOCK)
     (state_dir / "bash_backstop_stamps.json").write_text(json.dumps({"session-a": seeded_stamp}))
 
     result = _run(json.dumps({"session_id": "session-a", "cwd": str(tmp_path), "source": "resume"}), tmp_path)
@@ -63,14 +67,10 @@ def test_second_session_start_call_for_the_same_id_leaves_the_stamp_unchanged(tm
     assert json.loads(stamps_path.read_text())["session-a"] == seeded_stamp
 
 
-def test_first_backstop_call_after_a_session_start_seed_reports_a_write(tmp_path):
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "init"], cwd=tmp_path, check=True)
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+def test_first_backstop_call_after_a_session_start_seed_reports_a_write(git_repo):
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(git_repo / "state" / "state.json"))
 
-    session_payload = json.dumps({"session_id": "session-a", "cwd": str(tmp_path), "source": "startup"})
+    session_payload = json.dumps({"session_id": "session-a", "cwd": str(git_repo), "source": "startup"})
     session_result = subprocess.run(
         [sys.executable, str(_SCRIPT_PATH)],
         input=session_payload,
@@ -80,16 +80,18 @@ def test_first_backstop_call_after_a_session_start_seed_reports_a_write(tmp_path
         env=env,
     )
     assert session_result.returncode == 0
+    stamps_path = git_repo / "state" / "bash_backstop_stamps.json"
+    seeded_stamp = json.loads(stamps_path.read_text())["session-a"]
 
-    target = tmp_path / "tests" / "test_thing.py"
+    target = git_repo / "tests" / "test_thing.py"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text('def test_x():\n    """doc"""\n')
-    future = time.time() + 5
+    future = seeded_stamp + 5
     os.utime(target, (future, future))
 
     backstop_script = _SCRIPT_PATH.parent / "bash_backstop.py"
     backstop_payload = json.dumps(
-        {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+        {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
     )
     backstop_result = subprocess.run(
         [sys.executable, str(backstop_script)],
