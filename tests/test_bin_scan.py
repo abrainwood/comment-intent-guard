@@ -305,6 +305,42 @@ def test_scan_on_an_unborn_repo_skips_a_staged_file_deleted_from_the_worktree(tm
     assert "could not read" not in result.stdout + result.stderr
 
 
+def test_scan_from_a_subdirectory_reports_a_repo_relative_path(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "t.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=sub, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    combined = result.stdout + result.stderr
+    assert "sub/t.py:" in combined
+    assert str(tmp_path) not in combined
+
+
+def test_scan_rejects_extra_arguments(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan", "junk"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 2
+    assert "usage" in (result.stdout + result.stderr).lower()
+
+
+def test_check_subcommand_rejects_the_internal_scan_flag(tmp_path):
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "check", "--scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 2
+    assert "usage" in (result.stdout + result.stderr).lower()
+
+
 def test_scan_ignores_a_txt_file(tmp_path):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
@@ -318,8 +354,6 @@ def test_scan_ignores_a_txt_file(tmp_path):
 
 
 def test_scan_delegates_listing_entirely_to_the_python_scan_mode(tmp_path):
-    # The shell wrapper does no git listing of its own for scan - it is a
-    # thin dispatcher to `comment_intent_guard.py --scan`.
     plugin_root = tmp_path / "plugin"
     (plugin_root / "bin").mkdir(parents=True)
     wrapper_copy = plugin_root / "bin" / "comment-intent-guard"

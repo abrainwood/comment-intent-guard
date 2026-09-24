@@ -65,9 +65,6 @@ _C_QUOTE_SIMPLE_ESCAPES = {
 
 
 def _c_unquote_body(body):
-    # core.quotePath=false leaves chars above U+00FF as raw UTF-8 in body,
-    # mixed with backslash escapes for quote/octal bytes - accumulate both
-    # into one byte buffer and decode once at the end.
     out = bytearray()
     i, n = 0, len(body)
     while i < n:
