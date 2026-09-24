@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from conftest import git_repo_template_dir
+from conftest import git_repo_template_dir, ignore_git_lock_files
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_PATH = _REPO_ROOT / "hooks" / "bash_backstop.py"
@@ -57,7 +57,7 @@ def _run(payload, env, clock=_FIXED_CLOCK):
 
 
 def _init_git_repo(path):
-    shutil.copytree(git_repo_template_dir(), path, dirs_exist_ok=True)
+    shutil.copytree(git_repo_template_dir(), path, dirs_exist_ok=True, ignore=ignore_git_lock_files)
 
 
 def _write(path, relpath, content):
