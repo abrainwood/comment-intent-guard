@@ -241,3 +241,45 @@ def test_post_tool_use_hook_entry_declares_a_ten_second_timeout():
     post_tool_use = hooks_config["hooks"]["PostToolUse"][0]["hooks"][0]
 
     assert post_tool_use["timeout"] == 10
+
+
+def test_clean_line_appended_to_a_file_with_a_preexisting_advisory_produces_no_output(tmp_path):
+    _init_git_repo(tmp_path)
+    tracked = _write(tmp_path, "pkg/tracked.py", "# fixed on 2026-05-22 after the incident\npass\n")
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    with tracked.open("a") as handle:
+        handle.write("VALUE = 1\n")
+    _touch_future(tracked)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+
+
+def test_violating_line_appended_to_a_tracked_file_reports_only_the_new_finding(tmp_path):
+    _init_git_repo(tmp_path)
+    tracked = _write(tmp_path, "pkg/tracked.py", "# fixed on 2026-05-22 after the incident\npass\n")
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    with tracked.open("a") as handle:
+        handle.write("# updated on 2026-09-24 with a new fix\nVALUE = 1\n")
+    _touch_future(tracked)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert context.count("date, measurement, or SHA") == 1
+    assert "2026-09-24" not in context  # the finding message doesn't echo the date itself
+    assert "near line 3" in context

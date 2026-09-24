@@ -124,6 +124,9 @@ def _run():
         except guard.AnalysisUnavailable as exc:
             blocking = getattr(exc, "blocking", [])
             advisory = []
+        added = guard._added_line_numbers("HEAD", file_path)
+        if added is not None:
+            advisory = guard._restrict_to_added_lines(advisory, added)
         lines.extend(_findings_message(file_path, blocking, advisory))
 
     if isinstance(session_id, str):
