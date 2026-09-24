@@ -19,7 +19,7 @@ def stamps_path():
 
 
 def load_stamps(path):
-    return guard._load_state(path)
+    return guard._load_state(path, prefix="bash_backstop")
 
 
 def last_run(stamps, session_key):

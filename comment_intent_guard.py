@@ -803,17 +803,17 @@ def _warn(message, prefix="comment_intent_guard"):
     print(f"{prefix}: {message}", file=sys.stderr)
 
 
-def _load_state(state_path):
+def _load_state(state_path, prefix="comment_intent_guard"):
     try:
         with open(state_path, encoding="utf-8") as handle:
             state = json.load(handle)
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:
-        _warn(f"unreadable state at {state_path} ({type(exc).__name__}) - starting fresh")
+        _warn(f"unreadable state at {state_path} ({type(exc).__name__}) - starting fresh", prefix=prefix)
         return {}
     if not isinstance(state, dict):
-        _warn(f"unexpected state shape at {state_path} - starting fresh")
+        _warn(f"unexpected state shape at {state_path} - starting fresh", prefix=prefix)
         return {}
     return state
 
