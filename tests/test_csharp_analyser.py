@@ -112,6 +112,86 @@ def test_doc_comment_before_a_test_attribute_among_other_attributes_is_blocked()
     assert any("no caller" in message for message, _ in violations)
 
 
+def test_doc_comment_before_a_blank_line_then_attribute_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "\n"
+        "[Fact]\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("no caller" in message for message, _ in violations)
+
+
+def test_doc_comment_with_a_stray_triple_slash_line_before_the_signature_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact]\n"
+        "/// TODO: clean up\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("no caller" in message for message, _ in violations)
+
+
+def test_doc_comment_before_a_fully_qualified_attribute_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Xunit.Fact]\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("no caller" in message for message, _ in violations)
+
+
+def test_doc_comment_before_a_generic_test_method_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Theory]\n"
+        "public void ChecksTheThing<TItem>()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("ChecksTheThing" in message and "no caller" in message for message, _ in violations)
+
+
+def test_javadoc_style_block_comment_before_a_test_method_is_blocked():
+    text = (
+        "/** Checks the thing. */\n"
+        "[Fact]\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("no caller" in message for message, _ in violations)
+
+
+def test_javadoc_style_block_comment_span_has_doc_kind():
+    text = "/** summary */\nint x = 1;\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans[0][0] == "doc"
+
+
 def test_doc_comment_before_a_same_line_attribute_and_signature_is_blocked():
     text = (
         "/// <summary>Checks the thing.</summary>\n"

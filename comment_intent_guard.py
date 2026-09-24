@@ -593,7 +593,9 @@ def _csharp_comment_spans(text):
             close = text.find("*/", i + 2)
             end = n if close == -1 else close
             end_li = start_li + text.count("\n", i, end)
-            spans.append(("block", start_li, end_li, text[i + 2:end]))
+            is_javadoc = i + 2 < n and text[i + 2] == "*" and text[i + 2:i + 4] != "*/"
+            block_kind = "doc" if is_javadoc else "block"
+            spans.append((block_kind, start_li, end_li, text[i + 2:end]))
             i = n if close == -1 else close + 2
             continue
         i += 1
@@ -645,12 +647,13 @@ def _scan_csharp_comment_spans(spans, lines):
 
 
 _CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Fact", "Theory", "Test", "TestCase", "TestMethod"})
-_CSHARP_ATTRIBUTE_NAME_RE = re.compile(r"[\[,]\s*([A-Za-z_][A-Za-z0-9_]*)")
-_CSHARP_METHOD_NAME_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_CSHARP_ATTRIBUTE_NAME_RE = re.compile(r"[\[,]\s*([A-Za-z_][A-Za-z0-9_.]*)")
+_CSHARP_METHOD_NAME_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(")
 _CSHARP_ATTR_LINE_RE = re.compile(r"^\s*((?:\[[^\]]*\]\s*)+)(.*)$")
 
 
 def _is_csharp_test_attribute(name):
+    name = name.rpartition(".")[2]
     return name in _CSHARP_TEST_ATTRIBUTE_NAMES or name.removesuffix("Attribute") in _CSHARP_TEST_ATTRIBUTE_NAMES
 
 
@@ -663,6 +666,9 @@ def _csharp_test_method_after_doc_block(lines, end_li):
     li = end_li + 1
     saw_test_attribute = False
     while li < len(lines):
+        if not lines[li].strip() or lines[li].strip().startswith("///"):
+            li += 1
+            continue
         group = _csharp_line_attribute_group(lines[li])
         if group is None:
             break
