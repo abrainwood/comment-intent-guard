@@ -161,3 +161,39 @@ def test_first_call_for_a_new_session_establishes_baseline_and_reports_nothing(t
     assert first.stdout == ""
 
 
+
+
+def test_deleted_tracked_file_does_not_block_reporting_other_violations(tmp_path):
+    _init_git_repo(tmp_path)
+    tracked = _write(tmp_path, "pkg/tracked.py", "VALUE = 1\n")
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    tracked.unlink()
+    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    _touch_future(target)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_non_ascii_filename_is_reported_as_a_bright_line(tmp_path):
+    _init_git_repo(tmp_path)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    target = _write(tmp_path, "tests/tést_ü.py", 'def test_x():\n    """doc"""\n')
+    _touch_future(target)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert "test_x" in output["hookSpecificOutput"]["additionalContext"]

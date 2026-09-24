@@ -36,16 +36,16 @@ def _repo_root(cwd):
 
 def _git_paths(repo_root, args):
     result = subprocess.run(
-        ["git", "-C", repo_root, *args, "--", *_TRACKED_GLOBS],
+        ["git", "-C", repo_root, *args, "-z", "--", *_TRACKED_GLOBS],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
         return []
-    return [line for line in result.stdout.splitlines() if line]
+    return [entry for entry in result.stdout.split("\0") if entry]
 
 
 def _candidate_files(repo_root):
-    changed = _git_paths(repo_root, ["diff", "--name-only", "HEAD"])
+    changed = _git_paths(repo_root, ["diff", "--name-only", "--diff-filter=d", "HEAD"])
     untracked = _git_paths(repo_root, ["ls-files", "--others", "--exclude-standard"])
     relpaths = sorted(set(changed) | set(untracked))
     return [os.path.join(repo_root, relpath) for relpath in relpaths]
@@ -94,7 +94,14 @@ def _run():
         return
 
     last_run = _last_run(stamps, session_key) if session_key else 0
-    fresh = [f for f in candidates if os.path.getmtime(f) > last_run]
+    fresh = []
+    for candidate in candidates:
+        try:
+            mtime = os.path.getmtime(candidate)
+        except OSError:
+            continue
+        if mtime > last_run:
+            fresh.append(candidate)
 
     lines = []
     for file_path in fresh:
