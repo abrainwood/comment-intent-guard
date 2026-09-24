@@ -295,6 +295,14 @@ def test_parse_diff_added_lines_single_line_hunk_header_without_a_count_adds_exa
     assert result == {"a.py": {5}}
 
 
+def test_parse_diff_added_lines_hunk_header_with_an_explicit_count_adds_every_line_in_range():
+    module = _import_bash_backstop()
+
+    result = module._parse_diff_added_lines("+++ b/a.py\n@@ -0,0 +5,3 @@\n", {"a.py"})
+
+    assert result == {"a.py": {5, 6, 7}}
+
+
 def test_unquote_git_header_path_handles_mixed_raw_and_octal_escapes_from_quote_path_false(tmp_path):
     module = _import_bash_backstop()
 
