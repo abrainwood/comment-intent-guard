@@ -31,10 +31,25 @@ you've changed:
 comment-intent-guard scan
 ```
 
-CI runs the same check (`comment_intent_guard.py --base origin/main ...`)
-against `comment_intent_guard.py` and its own tests as part of the `lint`
-job, and the reusable `gate.yml` workflow runs it against the full diff of
-every PR, checked out at the PR's own `HEAD` SHA.
+Running the bare `comment-intent-guard` command resolves to whatever
+version is installed as your Claude Code plugin, not necessarily this
+checkout. To check this checkout's own code, run it from the repo root
+instead:
+
+```sh
+./bin/comment-intent-guard scan
+```
+
+CI runs two checks of its own. The `lint` job's "Dogfood the guard on its
+own diff" step runs `comment_intent_guard.py --base origin/main` against a
+fixed list - `comment_intent_guard.py`, `tests/test_comment_intent_guard.py`,
+`tests/test_public_api.py`. Separately, the `comment-guard-gate` job calls
+the reusable `gate.yml` workflow with `guard-ref: ${{ github.sha }}` - on a
+`pull_request` event `github.sha` is the test-merge commit GitHub creates
+for the run, so this pins the gate to this PR's own code rather than a
+release tag. That job diffs the PR's base against `HEAD` for files matching
+`gate.yml`'s default `paths` globs (`*.py *.yaml *.yml *.jinja *.j2 *.cs`)
+and runs the guard over whatever it finds.
 
 ## Mutation testing
 
@@ -53,7 +68,7 @@ out and what `--with-subprocess-coverage` adds.
 
 - One logical change per PR.
 - CI (lint, test matrix, comment-guard-gate) must be green before merge.
-- PRs merge by squash.
+- PRs merge by squash - the repo only allows squash merges.
 - If you change a symbol or message prefix listed in
   `tests/test_public_api.py`, check for the documented external consumers
   before merging - that file is a contract test over this module's public

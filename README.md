@@ -10,14 +10,21 @@ and C#.
 
 | Language | Extensions | Test-docstring bright line fires on |
 |---|---|---|
-| Python | `.py` | any docstring on a `test_*`/`Test*` function or method |
+| Python | `.py` | a docstring on any `def test_*` function or method (a `Test*` class docstring, or a test not named `test_*`, is not recognized) |
 | YAML | `.yaml`, `.yml` | not applicable - YAML has no test functions |
 | Jinja | `.jinja`, `.j2` | not applicable - Jinja has no test functions |
 | C# | `.cs` | a `///` XML doc block immediately preceding a method carrying `[Fact]`, `[Theory]`, `[Test]`, `[TestCase]`, or `[TestMethod]` - a test method under another framework's attribute is not recognized |
 
-All four get the same evidence-marker (date/measurement/SHA), issue-reference,
-external-id, oversize-docstring, and comment-run checks - see Bright lines and
-advisory findings below.
+C# ships in the next tagged release (v1.1.0). The v1.0.0 CI gate and existing
+v1.0.0 installs do not check `.cs` files.
+
+All four get the evidence-marker (date/measurement/SHA), issue-reference, and
+comment-run checks. External-id checks cover Python docstrings, test names,
+and filenames, and C# `///` blocks - not YAML or Jinja. The oversize check
+applies to all four, but the threshold differs: Python docstrings, C# `///`
+blocks, and YAML description block scalars use a 12-line threshold; Jinja
+`{# #}` comment blocks use an 8-line threshold. Session comment-density
+tracking runs on Python only. See Bright lines and advisory findings below.
 
 ## Install
 
@@ -55,8 +62,9 @@ To pin the plugin for a whole team, commit `.claude/settings.json` with:
   diffs against the PR's merge-base, and fails the build on a bright-line or
   internal-error exit; advisory findings are posted as PR annotations, not
   blocking. `comment-guard-init` drops a caller workflow into the target
-  repo's `.github/workflows/` that pins `guard-ref` to a tag, so a consumer
-  repo doesn't float onto an unreleased commit:
+  repo's `.github/workflows/` that pins the reusable workflow to a release
+  tag (whose `guard-ref` defaults to the same tag), so a consumer repo
+  doesn't float onto an unreleased commit:
 
   ```yaml
   name: comment-intent-guard
@@ -94,6 +102,11 @@ scans whole files; `check --base <ref>` restricts advisory findings to
 lines added since `<ref>` (bright-line findings still apply to the whole
 file). `init` wires the guard into the current repo - see the Install
 section above.
+
+`comment-intent-guard` is on `PATH` inside Claude Code sessions. From a
+plain terminal, run it from the plugin's install directory
+(`~/.claude/plugins/cache/comment-intent-guard/comment-intent-guard/<version>/bin/`)
+or from a checkout of this repo via `./bin/comment-intent-guard`.
 
 ### Exit codes
 
@@ -144,9 +157,10 @@ support, added in 3.12. Below that, Python findings are skipped and reported
 as exit code 4; YAML findings are unaffected. CI runs the suite on 3.12,
 3.13, and 3.14.
 
-Git 2.31 or newer for the pre-commit hook's native-hook path resolution
-(`git rev-parse --path-format=absolute`). See issue #19 for older-git
-fallback status.
+Any git version. `init.sh` resolves the native-hook path with
+`git rev-parse --git-common-dir`, falling back to a manual
+absolute-path conversion on git older than 2.31 (which lacks
+`--path-format=absolute`).
 
 ## Mutation testing
 
@@ -178,7 +192,9 @@ scores are in issue #31.
 
 Tags are `comment-intent-guard--vX.Y.Z`. `gate.yml` pins a specific tag via
 its `guard-ref` input (default `comment-intent-guard--v1.0.0`). To pick up a
-new release in an installed plugin, run `claude plugin update`.
+new release in an installed plugin, run
+`claude plugin update comment-intent-guard@comment-intent-guard` and restart
+Claude Code.
 
 ## Consumers
 

@@ -3,7 +3,8 @@
 ## Supported versions
 
 Only the latest tagged release (`comment-intent-guard--vX.Y.Z`) is
-supported. Install or update via `claude plugin update` to stay current.
+supported. Update via `claude plugin update comment-intent-guard@comment-intent-guard`,
+then restart Claude Code to apply it.
 
 ## Reporting a vulnerability
 
