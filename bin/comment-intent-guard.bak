@@ -54,16 +54,10 @@ cmd_scan() {
   untracked_file="$(mktemp)"
   trap 'rm -f "$tracked_file" "$untracked_file"' EXIT
 
-  # Word-split the fixed pathspec list into separate git arguments, but with
-  # globbing off - otherwise a real *.py file sitting at the repo root would
-  # expand to that one filename before git ever sees the pattern, silently
-  # dropping every other match.
-  set -f
-  # shellcheck disable=SC2086
+  # shellcheck disable=SC2086 # intentional word-splitting of the fixed pathspec list
   git diff --name-only -z --diff-filter=d HEAD -- $_SCAN_PATHSPEC > "$tracked_file"
   # shellcheck disable=SC2086
   git ls-files --others --exclude-standard -z -- $_SCAN_PATHSPEC > "$untracked_file"
-  set +f
 
   if [ ! -s "$tracked_file" ] && [ ! -s "$untracked_file" ]; then
     echo "nothing uncommitted to scan"

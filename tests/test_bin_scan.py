@@ -74,3 +74,44 @@ def test_scan_does_not_flag_a_pre_existing_advisory_touched_only_by_a_clean_appe
 
     assert result.returncode == 0
     assert "config.yaml" not in result.stdout + result.stderr
+
+
+def test_scan_ignores_a_deleted_tracked_file_but_still_reports_an_untracked_violation(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    (tmp_path / "committed.py").unlink()
+    (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "bad.py" in result.stdout + result.stderr
+    assert "committed.py" not in result.stdout + result.stderr
+    assert "No such file" not in result.stdout + result.stderr
+
+
+def test_scan_pathspec_is_not_shell_glob_expanded_against_the_repo_root(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("hello\n")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+    )
+    # A top-level match for one glob in the pathspec (top.py) sits alongside
+    # a match nested in a subdirectory (sub/bad.py). If the shell expands
+    # the pathspec's *.py against the cwd before git ever sees it, only the
+    # top-level match survives and the nested violation goes unreported.
+    (tmp_path / "top.py").write_text("def add(a, b):\n    return a + b\n")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "bad.py" in result.stdout + result.stderr
