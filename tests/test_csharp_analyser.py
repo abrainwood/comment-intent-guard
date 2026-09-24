@@ -613,3 +613,17 @@ def test_unterminated_interpolation_hole_does_not_swallow_later_comments():
     blocking, findings = guard._scan_csharp_comments(text)
 
     assert len(blocking) == 2
+
+
+def test_doc_comment_after_the_attribute_and_before_the_signature_is_blocked():
+    text = (
+        "[Fact]\n"
+        "/// b\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("no caller" in message for message, _ in violations)
