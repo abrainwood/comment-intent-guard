@@ -462,3 +462,25 @@ def test_warning_uses_a_single_bash_backstop_prefix_not_comment_intent_guard(tmp
     assert result.stderr.count(":") >= 1
     assert "bash_backstop:" in result.stderr
     assert "comment_intent_guard:" not in result.stderr
+
+
+def test_advisory_only_file_appears_without_a_bright_line_tag(tmp_path):
+    _init_git_repo(tmp_path)
+    tracked = _write(tmp_path, "pkg/tracked.py", "pass\n")
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    with tracked.open("a") as handle:
+        handle.write("# updated on 2026-09-24 with a new fix\nVALUE = 1\n")
+    _touch_future(tracked)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "date, measurement, or SHA" in context
+    assert "BRIGHT LINE" not in context
