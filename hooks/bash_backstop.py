@@ -76,17 +76,24 @@ def _run():
         return
 
     candidates = _candidate_files(repo_root)
-    if not candidates:
-        return
     if len(candidates) > _MAX_CANDIDATES:
         guard._warn(
             f"{len(candidates)} changed files exceeds the {_MAX_CANDIDATES}-file cap - skipping this run"
         )
         return
 
+    session_key = session_id if isinstance(session_id, str) else None
     stamps_path = _stamps_path()
     stamps = guard._load_state(stamps_path)
-    last_run = _last_run(stamps, session_id) if isinstance(session_id, str) else 0
+
+    if session_key is not None and session_key not in stamps:
+        # First call for a session establishes the mtime baseline; the backstop
+        # covers writes made during this session, not the repo's pre-existing state.
+        stamps[session_key] = time.time()
+        guard._save_state(stamps_path, stamps)
+        return
+
+    last_run = _last_run(stamps, session_key) if session_key else 0
     fresh = [f for f in candidates if os.path.getmtime(f) > last_run]
 
     lines = []
