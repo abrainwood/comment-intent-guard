@@ -1,3 +1,5 @@
+import importlib.util
+import io
 import json
 import os
 import subprocess
@@ -6,6 +8,13 @@ import time
 from pathlib import Path
 
 _SCRIPT_PATH = Path(__file__).resolve().parent.parent / "hooks" / "session_start.py"
+
+
+def _import_session_start():
+    spec = importlib.util.spec_from_file_location("session_start", _SCRIPT_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(payload_input, tmp_path):
@@ -94,3 +103,25 @@ def test_first_backstop_call_after_a_session_start_seed_reports_a_write(tmp_path
     assert backstop_result.returncode == 0
     output = json.loads(backstop_result.stdout)
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_seed_failure_does_not_lose_the_skill_stanza(tmp_path, monkeypatch, capsys):
+    module = _import_session_start()
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+
+    def _raise(raw_input):
+        raise OSError("simulated seeding failure")
+
+    monkeypatch.setattr(module, "_seed_baseline_if_absent", _raise)
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(""))
+
+    module.main()
+
+    captured = capsys.readouterr()
+    output = json.loads(captured.out)
+    hook_output = output["hookSpecificOutput"]
+    assert hook_output["hookEventName"] == "SessionStart"
+    assert "self-documenting-code" in hook_output["additionalContext"]
+    assert "bash_backstop:" in captured.err

@@ -4,6 +4,9 @@ import os
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import comment_intent_guard as guard  # noqa: E402
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stamps  # noqa: E402
 
@@ -21,7 +24,7 @@ _STANZA = "\n".join(
 )
 
 
-def _seed_session_baseline(raw_input):
+def _seed_baseline_if_absent(raw_input):
     try:
         payload = json.loads(raw_input) if raw_input else {}
     except json.JSONDecodeError:
@@ -30,14 +33,16 @@ def _seed_session_baseline(raw_input):
     path = stamps.stamps_path()
     all_stamps = stamps.load_stamps(path)
     if session_key in all_stamps:
-        # Resume/compact must not reset an in-progress session's baseline.
         return
     stamps.save_stamps(path, session_key, int(time.time()), all_stamps)
 
 
 def main():
     raw_input = sys.stdin.read()
-    _seed_session_baseline(raw_input)
+    try:
+        _seed_baseline_if_absent(raw_input)
+    except (OSError, ValueError) as exc:
+        guard._warn(f"could not seed session baseline ({type(exc).__name__})", prefix="bash_backstop")
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
