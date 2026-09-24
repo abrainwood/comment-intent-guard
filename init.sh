@@ -2,7 +2,6 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
 CLAUDE_MD_MARKER="<!-- comment-intent-guard:comment-guard-init -->"
 
 usage() {
@@ -25,6 +24,8 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 JSON_DEST="$REPO_ROOT/.comment-intent-guard.json"
 JSON_SRC="$SCRIPT_DIR/templates/comment-intent-guard.json"

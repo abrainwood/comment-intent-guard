@@ -110,6 +110,15 @@ def test_unknown_arg_prints_usage_to_stderr_and_exits_2_without_touching_the_rep
     assert hooks_path.stdout.strip() == ""
 
 
+def test_help_outside_a_git_repo_prints_usage_and_exits_0(tmp_path):
+    result = subprocess.run(
+        ["bash", str(_INIT_SH), "--help"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert "[--force]" in result.stdout
+
+
 def test_existing_hookspath_pointing_elsewhere_is_refused_and_nothing_is_written(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "core.hooksPath", "husky/hooks"], cwd=tmp_path, check=True)
