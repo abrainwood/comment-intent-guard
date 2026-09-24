@@ -19,6 +19,91 @@ ROOT_DIR="$(cd "$BIN_DIR/.." && pwd -P)"
 subcommand="${1:-}"
 [ $# -gt 0 ] && shift
 
+_SCAN_PATHSPEC="*.py *.yaml *.yml *.jinja *.j2"
+_NEWLINE_ONLY_IFS="
+"
+
+disable_globbing() {
+  set -f
+}
+
+enable_globbing() {
+  set +f
+}
+
+split_nul_list_into_args() {
+  tr '\0' '\n' < "$1"
+}
+
+run_guard_setting_code() {
+  list_file="$1"
+  shift
+  save_ifs="$IFS"
+  IFS="$_NEWLINE_ONLY_IFS"
+  disable_globbing
+  # shellcheck disable=SC2046
+  set -- "$@" -- $(split_nul_list_into_args "$list_file")
+  enable_globbing
+  IFS="$save_ifs"
+  set +e
+  python3 "$ROOT_DIR/comment_intent_guard.py" "$@"
+  code=$?
+  set -e
+}
+
+cmd_scan() {
+  if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "comment-intent-guard scan: not inside a git repository" >&2
+    exit 2
+  fi
+  cd "$repo_root" || exit 2
+
+  tracked_file="$(mktemp)"
+  untracked_file="$(mktemp)"
+  trap 'rm -f "$tracked_file" "$untracked_file"' EXIT
+
+  head_sha="$(git rev-parse -q --verify HEAD || true)"
+
+  disable_globbing
+  if [ -n "$head_sha" ]; then
+    # shellcheck disable=SC2086
+    git diff --name-only -z --diff-filter=d HEAD -- $_SCAN_PATHSPEC > "$tracked_file"
+  else
+    # shellcheck disable=SC2086
+    git diff --cached --name-only -z --diff-filter=d -- $_SCAN_PATHSPEC > "$tracked_file"
+  fi
+  # shellcheck disable=SC2086
+  git ls-files --others --exclude-standard -z -- $_SCAN_PATHSPEC > "$untracked_file"
+  enable_globbing
+
+  if [ ! -s "$tracked_file" ] && [ ! -s "$untracked_file" ]; then
+    echo "nothing uncommitted to scan"
+    exit 0
+  fi
+
+  overall=0
+
+  if [ -s "$tracked_file" ]; then
+    if [ -n "$head_sha" ]; then
+      run_guard_setting_code "$tracked_file" --base HEAD
+    else
+      run_guard_setting_code "$tracked_file" --all
+    fi
+    if [ "$code" -gt "$overall" ]; then
+      overall="$code"
+    fi
+  fi
+
+  if [ -s "$untracked_file" ]; then
+    run_guard_setting_code "$untracked_file" --all
+    if [ "$code" -gt "$overall" ]; then
+      overall="$code"
+    fi
+  fi
+
+  exit "$overall"
+}
+
 case "$subcommand" in
   init)
     exec bash "$ROOT_DIR/init.sh" "$@"
@@ -26,8 +111,11 @@ case "$subcommand" in
   check)
     exec python3 "$ROOT_DIR/comment_intent_guard.py" "$@"
     ;;
+  scan)
+    cmd_scan
+    ;;
   *)
-    echo "usage: comment-intent-guard <init|check> [args...]" >&2
+    echo "usage: comment-intent-guard <init|check|scan> [args...]" >&2
     exit 2
     ;;
 esac
