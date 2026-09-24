@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -24,9 +25,7 @@ def test_restamping_and_eviction_respect_the_session_cap(tmp_path, monkeypatch):
     module.save_stamps(path, "session-0", 3, stamps)
     module.save_stamps(path, "session-3", 4, stamps)
 
-    assert "session-0" in stamps
-    assert "session-1" not in stamps
-    assert len(stamps) == 3
+    assert json.loads(Path(path).read_text()) == {"session-2": 2, "session-0": 3, "session-3": 4}
 
 
 def test_load_stamps_warns_with_the_bash_backstop_prefix_on_a_corrupt_file(tmp_path, capsys):

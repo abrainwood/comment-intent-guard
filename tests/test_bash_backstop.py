@@ -8,11 +8,11 @@ import sys
 import time
 from pathlib import Path
 
-from conftest import git_repo_template_dir, ignore_git_lock_files
+import pytest
+from conftest import _FIXED_CLOCK
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_PATH = _REPO_ROOT / "hooks" / "bash_backstop.py"
-_FIXED_CLOCK = 1_700_000_000
 
 
 def _import_bash_backstop():
@@ -33,31 +33,18 @@ def _run_subprocess(payload, env):
     )
 
 
-def _run(payload, env, clock=_FIXED_CLOCK):
-    module = _import_bash_backstop()
-    stdin_backup, stdout_backup, stderr_backup = sys.stdin, sys.stdout, sys.stderr
-    state_value = env.get("COMMENT_INTENT_GUARD_STATE")
-    env_backup = os.environ.get("COMMENT_INTENT_GUARD_STATE")
-    time_backup = module.time.time
-    out, err = io.StringIO(), io.StringIO()
-    sys.stdin, sys.stdout, sys.stderr = io.StringIO(json.dumps(payload)), out, err
-    if state_value is not None:
-        os.environ["COMMENT_INTENT_GUARD_STATE"] = state_value
-    module.time.time = lambda: clock
-    try:
-        module.main()
-    finally:
-        sys.stdin, sys.stdout, sys.stderr = stdin_backup, stdout_backup, stderr_backup
-        module.time.time = time_backup
-        if env_backup is None:
-            os.environ.pop("COMMENT_INTENT_GUARD_STATE", None)
-        else:
-            os.environ["COMMENT_INTENT_GUARD_STATE"] = env_backup
-    return subprocess.CompletedProcess(args=[], returncode=0, stdout=out.getvalue(), stderr=err.getvalue())
-
-
-def _init_git_repo(path):
-    shutil.copytree(git_repo_template_dir(), path, dirs_exist_ok=True, ignore=ignore_git_lock_files)
+@pytest.fixture
+def run_backstop(monkeypatch):
+    def _call(payload, state_path, clock=_FIXED_CLOCK):
+        module = _import_bash_backstop()
+        monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
+        stdout = io.StringIO()
+        monkeypatch.setattr(module.sys, "stdout", stdout)
+        monkeypatch.setattr(module.time, "time", lambda: clock)
+        monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", state_path)
+        module._run()
+        return stdout.getvalue()
+    return _call
 
 
 def _write(path, relpath, content):
@@ -77,14 +64,13 @@ def test_non_git_cwd_produces_no_output(tmp_path):
     assert result.stdout == ""
 
 
-def test_heredoc_written_test_docstring_is_reported_as_a_bright_line(tmp_path):
-    _init_git_repo(tmp_path)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+def test_heredoc_written_test_docstring_is_reported_as_a_bright_line(git_repo):
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(git_repo / "state" / "state.json"))
     baseline = _run_subprocess(payload, env)
     assert baseline.stdout == ""
 
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
     _touch_future(target)
 
     result = _run_subprocess(payload, env)
@@ -107,20 +93,18 @@ def _touch_ahead(path, seconds=5, clock=_FIXED_CLOCK):
     os.utime(path, (future, future))
 
 
-def test_second_call_on_a_clean_repo_produces_no_output(tmp_path):
-    _init_git_repo(tmp_path)
-    untracked = _write(tmp_path, "pkg/untracked.py", '"""fixes #91"""\nVALUE = 1\n')
+def test_second_call_does_not_report_an_untracked_file_older_than_the_baseline(git_repo, run_backstop):
+    untracked = _write(git_repo, "pkg/untracked.py", '"""fixes #91"""\nVALUE = 1\n')
     old = _FIXED_CLOCK - 100
     os.utime(untracked, (old, old))
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    baseline = _run(payload, env)
-    assert baseline.stdout == ""
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    baseline = run_backstop(payload, state_path)
+    assert baseline == ""
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    assert result.stdout == ""
+    assert result == ""
 
 
 def _seed_stamp(tmp_path, session_id, stamp):
@@ -130,76 +114,81 @@ def _seed_stamp(tmp_path, session_id, stamp):
     return str(state_dir / "state.json")
 
 
-def test_same_session_second_call_with_no_new_mtime_produces_no_output(tmp_path):
-    _init_git_repo(tmp_path)
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    stamp = 1_700_000_000
+def test_same_session_second_call_with_no_new_mtime_produces_no_output(git_repo, run_backstop):
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    stamp = int(_FIXED_CLOCK)
     os.utime(target, (stamp - 10, stamp - 10))
-    state_path = _seed_stamp(tmp_path, "session-a", stamp)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=state_path)
+    state_path = _seed_stamp(git_repo, "session-a", stamp)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    assert result.stdout == ""
+    assert result == ""
 
 
-def test_mtime_equal_to_the_stamp_is_reported(tmp_path):
-    _init_git_repo(tmp_path)
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    stamp = 1_700_000_000
+def test_mtime_equal_to_the_stamp_is_reported(git_repo, run_backstop):
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    stamp = int(_FIXED_CLOCK)
     os.utime(target, (stamp, stamp))
-    state_path = _seed_stamp(tmp_path, "session-a", stamp)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=state_path)
+    state_path = _seed_stamp(git_repo, "session-a", stamp)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
 
 
-def test_backstop_does_not_re_report_an_unchanged_file_on_the_next_call(tmp_path):
-    _init_git_repo(tmp_path)
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    pass\n')
-    seed_stamp = 1_700_000_000
-    state_path = _seed_stamp(tmp_path, "session-a", seed_stamp)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=state_path)
+def test_report_uses_the_posttooluse_hook_event_name(git_repo, run_backstop):
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
+
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    _touch_ahead(target)
+
+    result = run_backstop(payload, state_path)
+
+    output = json.loads(result)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+
+
+def test_file_with_mtime_equal_to_the_truncated_clock_is_reported_on_the_next_call(git_repo, run_backstop):
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    pass\n')
+    seed_stamp = int(_FIXED_CLOCK)
+    state_path = _seed_stamp(git_repo, "session-a", seed_stamp)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
     edit_stamp = seed_stamp + 10
     target.write_text('def test_x():\n    """doc"""\n')
     os.utime(target, (edit_stamp, edit_stamp))
 
     scan_clock = edit_stamp + 5
-    second = _run(payload, env, clock=scan_clock)
-    assert "test_x" in json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
+    first_scan = run_backstop(payload, state_path, clock=scan_clock)
+    assert "test_x" in json.loads(first_scan)["hookSpecificOutput"]["additionalContext"]
 
-    third = _run(payload, env, clock=scan_clock)
+    repeat_scan = run_backstop(payload, state_path, clock=scan_clock)
 
-    assert third.stdout == ""
+    assert repeat_scan == ""
 
 
-def test_a_different_session_id_is_reported_again(tmp_path):
-    _init_git_repo(tmp_path)
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    payload_a = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    payload_b = {"session_id": "session-b", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    assert _run(payload_a, env).stdout == ""
+def test_a_different_session_id_is_reported_again(git_repo, run_backstop):
+    state_path = str(git_repo / "state" / "state.json")
+    payload_a = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    payload_b = {"session_id": "session-b", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    assert run_backstop(payload_a, state_path) == ""
 
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
     _touch_ahead(target)
 
-    first = _run(payload_a, env)
-    assert json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
+    first = run_backstop(payload_a, state_path)
+    assert json.loads(first)["hookSpecificOutput"]["additionalContext"]
 
-    baseline_b = _run(payload_b, env)
-    assert baseline_b.stdout == ""
+    baseline_b = run_backstop(payload_b, state_path)
+    assert baseline_b == ""
     _touch_ahead(target, seconds=10)
 
-    second = _run(payload_b, env)
-    assert json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
+    second = run_backstop(payload_b, state_path)
+    assert json.loads(second)["hookSpecificOutput"]["additionalContext"]
 
 
 def test_more_than_200_candidates_warns_with_a_single_bash_backstop_prefix(tmp_path, monkeypatch, capsys):
@@ -237,53 +226,47 @@ def test_malformed_json_input_does_not_crash_uncaught(tmp_path):
     assert "bash_backstop" in result.stderr
 
 
-def test_first_call_for_a_new_session_establishes_baseline_and_reports_nothing(tmp_path):
-    _init_git_repo(tmp_path)
-    _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+def test_first_call_for_a_new_session_establishes_baseline_and_reports_nothing(git_repo, run_backstop):
+    _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
 
-    first = _run(payload, env)
+    first = run_backstop(payload, state_path)
 
-    assert first.returncode == 0
-    assert first.stdout == ""
+    assert first == ""
 
 
 
 
-def test_deleted_tracked_file_does_not_block_reporting_other_violations(tmp_path):
-    _init_git_repo(tmp_path)
-    tracked = _write(tmp_path, "pkg/tracked.py", "VALUE = 1\n")
-    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+def test_deleted_tracked_file_does_not_block_reporting_other_violations(git_repo, run_backstop):
+    tracked = _write(git_repo, "pkg/tracked.py", "VALUE = 1\n")
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=git_repo, check=True)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
     tracked.unlink()
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
     _touch_ahead(target)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
 
 
-def test_non_ascii_filename_is_reported_as_a_bright_line(tmp_path):
-    _init_git_repo(tmp_path)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+def test_non_ascii_filename_is_reported_as_a_bright_line(git_repo, run_backstop):
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
-    target = _write(tmp_path, "tests/tést_ü.py", 'def test_x():\n    """doc"""\n')
+    target = _write(git_repo, "tests/tést_ü.py", 'def test_x():\n    """doc"""\n')
     _touch_ahead(target)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
 
 
@@ -388,68 +371,62 @@ def test_post_tool_use_hook_entry_declares_a_ten_second_timeout():
     assert post_tool_use["timeout"] == 10
 
 
-def test_clean_line_appended_to_a_file_with_a_preexisting_advisory_produces_no_output(tmp_path):
-    _init_git_repo(tmp_path)
-    tracked = _write(tmp_path, "pkg/tracked.py", "# fixed on 2026-05-22 after the incident\npass\n")
-    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+def test_clean_line_appended_to_a_file_with_a_preexisting_advisory_produces_no_output(git_repo, run_backstop):
+    tracked = _write(git_repo, "pkg/tracked.py", "# fixed on 2026-05-22 after the incident\npass\n")
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=git_repo, check=True)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
     with tracked.open("a") as handle:
         handle.write("VALUE = 1\n")
     _touch_ahead(tracked)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    assert result.stdout == ""
+    assert result == ""
 
 
-def test_violating_line_appended_to_a_tracked_file_reports_the_new_finding_without_echoing_the_date(tmp_path):
-    _init_git_repo(tmp_path)
-    tracked = _write(tmp_path, "pkg/tracked.py", "# fixed on 2026-05-22 after the incident\npass\n")
-    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+def test_violating_line_appended_to_a_tracked_file_reports_the_new_finding_without_echoing_the_date(git_repo, run_backstop):
+    tracked = _write(git_repo, "pkg/tracked.py", "# fixed on 2026-05-22 after the incident\npass\n")
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=git_repo, check=True)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
     with tracked.open("a") as handle:
         handle.write("# updated on 2026-09-24 with a new fix\nVALUE = 1\n")
     _touch_ahead(tracked)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     context = output["hookSpecificOutput"]["additionalContext"]
     assert context.count("date, measurement, or SHA") == 1
     assert "2026-09-24" not in context
     assert "near line 3" in context
 
 
-def test_partial_write_to_the_stamps_file_is_rewritten_as_valid_json_on_the_next_run(tmp_path):
-    _init_git_repo(tmp_path)
-    state_dir = tmp_path / "state"
+def test_partial_write_to_the_stamps_file_is_rewritten_as_valid_json_on_the_next_run(git_repo, run_backstop):
+    state_dir = git_repo / "state"
     state_dir.mkdir()
     stamps_path = state_dir / "bash_backstop_stamps.json"
     stamps_path.write_text('{"session-a": 123, "sess')
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(state_dir / "state.json"))
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(state_dir / "state.json")
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    assert result.stdout == ""
-    assert json.loads(stamps_path.read_text()) == {"session-a": _FIXED_CLOCK}
+    assert result == ""
+    assert json.loads(stamps_path.read_text()) == {"session-a": int(_FIXED_CLOCK)}
 
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
     _touch_ahead(target)
-    second = _run(payload, env)
+    second = run_backstop(payload, state_path)
 
-    assert "test_x" in json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "test_x" in json.loads(second)["hookSpecificOutput"]["additionalContext"]
 
 
 def test_build_message_caps_at_40_findings_with_a_more_findings_note():
@@ -475,14 +452,11 @@ def test_build_message_with_exactly_40_findings_has_no_more_findings_note():
 
 def test_build_message_byte_cap_reports_the_exact_omitted_count():
     module = _import_bash_backstop()
-    finding_byte_size = 500
-    finding_count = module._MAX_FINDINGS + 5
-    lines = ["x" * finding_byte_size for _ in range(finding_count)]
+    lines = ["x" * (module._MAX_MESSAGE_BYTES - 30)]
 
     message = module._build_message(lines)
 
-    kept = message.count("x" * finding_byte_size)
-    assert message.endswith(f"... and {finding_count - kept} more findings")
+    assert message.endswith("... and 1 more findings")
 
 
 def test_build_message_caps_by_byte_budget_even_under_40_findings():
@@ -513,47 +487,42 @@ def test_exactly_200_candidates_does_not_warn(tmp_path, monkeypatch, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_modified_tracked_file_is_reported_as_a_bright_line(tmp_path):
-    _init_git_repo(tmp_path)
-    tracked = _write(tmp_path, "tests/test_thing.py", "def test_x():\n    pass\n")
-    subprocess.run(["git", "add", "tests/test_thing.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add tracked test"], cwd=tmp_path, check=True)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+def test_modified_tracked_file_is_reported_as_a_bright_line(git_repo, run_backstop):
+    tracked = _write(git_repo, "tests/test_thing.py", "def test_x():\n    pass\n")
+    subprocess.run(["git", "add", "tests/test_thing.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked test"], cwd=git_repo, check=True)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
     tracked.write_text('def test_x():\n    """doc"""\n')
     _touch_ahead(tracked)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     assert "bright line" in output["hookSpecificOutput"]["additionalContext"].lower()
 
 
-def test_cwd_in_subdirectory_of_repo_still_finds_changes(tmp_path):
-    _init_git_repo(tmp_path)
-    subdir = tmp_path / "pkg" / "sub"
+def test_cwd_in_subdirectory_of_repo_still_finds_changes(git_repo, run_backstop):
+    subdir = git_repo / "pkg" / "sub"
     subdir.mkdir(parents=True)
     payload = {"session_id": "session-a", "cwd": str(subdir), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
     _touch_ahead(target)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
 
 
-def test_import_of_comment_intent_guard_works_when_launched_from_an_unrelated_cwd(tmp_path):
-    _init_git_repo(tmp_path)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+def test_import_of_comment_intent_guard_works_when_launched_from_an_unrelated_cwd(git_repo):
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(git_repo / "state" / "state.json"))
 
     result = subprocess.run(
         [sys.executable, str(_SCRIPT_PATH)],
@@ -562,38 +531,35 @@ def test_import_of_comment_intent_guard_works_when_launched_from_an_unrelated_cw
         text=True,
         timeout=10,
         env=env,
-        cwd=str(tmp_path),
+        cwd=str(git_repo),
     )
 
     assert result.returncode == 0
     assert result.stderr == ""
 
 
-def test_advisory_only_file_appears_without_a_bright_line_tag(tmp_path):
-    _init_git_repo(tmp_path)
-    tracked = _write(tmp_path, "pkg/tracked.py", "pass\n")
-    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+def test_advisory_only_file_appears_without_a_bright_line_tag(git_repo, run_backstop):
+    tracked = _write(git_repo, "pkg/tracked.py", "pass\n")
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=git_repo, check=True)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
     with tracked.open("a") as handle:
         handle.write("# updated on 2026-09-24 with a new fix\nVALUE = 1\n")
     _touch_ahead(tracked)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "date, measurement, or SHA" in context
     assert "BRIGHT LINE" not in context
 
 
-def _git_call_count_for_a_modified_candidate_scan(repo_dir, monkeypatch, file_count):
-    repo_dir.mkdir()
-    _init_git_repo(repo_dir)
+def _git_call_count_for_a_modified_candidate_scan(repo_dir, monkeypatch, file_count, git_repo_template):
+    shutil.copytree(git_repo_template, repo_dir)
     for n in range(file_count):
         _write(repo_dir, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n")
     subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
@@ -628,23 +594,25 @@ def _git_call_count_for_a_modified_candidate_scan(repo_dir, monkeypatch, file_co
     return call_count
 
 
-def test_git_call_count_stays_constant_regardless_of_candidate_count(tmp_path, monkeypatch):
-    one_candidate = _git_call_count_for_a_modified_candidate_scan(tmp_path / "one", monkeypatch, file_count=1)
-    fifty_candidates = _git_call_count_for_a_modified_candidate_scan(tmp_path / "fifty", monkeypatch, file_count=50)
+def test_git_call_count_stays_constant_regardless_of_candidate_count(tmp_path, monkeypatch, git_repo_template):
+    one_candidate = _git_call_count_for_a_modified_candidate_scan(
+        tmp_path / "one", monkeypatch, file_count=1, git_repo_template=git_repo_template
+    )
+    fifty_candidates = _git_call_count_for_a_modified_candidate_scan(
+        tmp_path / "fifty", monkeypatch, file_count=50, git_repo_template=git_repo_template
+    )
 
     assert one_candidate == fifty_candidates
 
 
-def test_backstop_reports_blocking_findings_from_an_unanalyzable_file(tmp_path, monkeypatch):
-    _init_git_repo(tmp_path)
-    target = _write(tmp_path, "pkg/tracked.py", "pass\n")
+def test_backstop_reports_blocking_findings_from_an_unanalyzable_file(git_repo, monkeypatch):
+    _write(git_repo, "pkg/untracked.py", "pass\n")
     module = _import_bash_backstop()
     monkeypatch.setattr(module.time, "time", lambda: _FIXED_CLOCK)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(git_repo / "state" / "state.json"))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
     module._run()
-    _touch_ahead(target)
 
     def _raise_unavailable(file_path, text):
         exc = module.guard.AnalysisUnavailable("could not analyze")
@@ -672,8 +640,7 @@ def test_diff_against_missing_head_stays_silent(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
-def test_git_paths_failure_other_than_missing_head_is_warned(tmp_path, monkeypatch, capsys):
-    _init_git_repo(tmp_path)
+def test_git_paths_failure_other_than_missing_head_is_warned(git_repo, monkeypatch, capsys):
     module = _import_bash_backstop()
 
     def _fake_run(*args, **kwargs):
@@ -681,14 +648,13 @@ def test_git_paths_failure_other_than_missing_head_is_warned(tmp_path, monkeypat
 
     monkeypatch.setattr(module.subprocess, "run", _fake_run)
 
-    result = module._git_paths(str(tmp_path), ["diff", "--name-only", "HEAD"])
+    result = module._git_paths(str(git_repo), ["diff", "--name-only", "HEAD"])
 
     assert result == []
     assert "index file corrupt" in capsys.readouterr().err
 
 
-def test_diff_failure_other_than_missing_head_is_warned(tmp_path, monkeypatch, capsys):
-    _init_git_repo(tmp_path)
+def test_diff_failure_other_than_missing_head_is_warned(git_repo, monkeypatch, capsys):
     module = _import_bash_backstop()
 
     def _fake_run(*args, **kwargs):
@@ -696,86 +662,74 @@ def test_diff_failure_other_than_missing_head_is_warned(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(module.subprocess, "run", _fake_run)
 
-    result = module._tracked_diff_added_lines(str(tmp_path), set())
+    result = module._tracked_diff_added_lines(str(git_repo), set())
 
     assert result == {}
     assert "index file corrupt" in capsys.readouterr().err
 
 
 def test_missing_session_id_still_tracks_a_baseline_stamp_and_stops_reporting_once_the_stamp_passes_the_mtime(
-    tmp_path,
+    git_repo, run_backstop,
 ):
-    _init_git_repo(tmp_path)
-    payload = {"cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+    payload = {"cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
-    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
     _touch_ahead(target)
-    first = _run(payload, env)
-    assert first.returncode == 0
-    assert "test_x" in json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
+    first = run_backstop(payload, state_path, clock=_FIXED_CLOCK + 6)
+    assert "test_x" in json.loads(first)["hookSpecificOutput"]["additionalContext"]
 
-    stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
-    stamps = json.loads(stamps_path.read_text())
-    future_mtime = int(os.path.getmtime(target))
-    stamps_path.write_text(json.dumps({key: future_mtime + 1 for key in stamps}))
+    third = run_backstop(payload, state_path)
 
-    third = _run(payload, env)
-
-    assert third.stdout == ""
+    assert third == ""
 
 
-def test_heredoc_written_yaml_with_an_issue_reference_is_reported_as_a_bright_line(tmp_path):
-    _init_git_repo(tmp_path)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    baseline = _run(payload, env)
-    assert baseline.stdout == ""
+def test_heredoc_written_yaml_with_an_issue_reference_is_reported_as_a_bright_line(git_repo, run_backstop):
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    baseline = run_backstop(payload, state_path)
+    assert baseline == ""
 
-    target = _write(tmp_path, "config/thing.yaml", "# fixes #482 by capping retries\nkey: value\n")
+    target = _write(git_repo, "config/thing.yaml", "# fixes #482 by capping retries\nkey: value\n")
     _touch_ahead(target)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "BRIGHT LINE" in context
     assert "thing.yaml" in context
 
 
-def test_tracked_file_with_a_space_in_its_name_is_reported(tmp_path):
-    _init_git_repo(tmp_path)
-    target = _write(tmp_path, "pkg/my file.py", "pass\n")
-    subprocess.run(["git", "add", "pkg/my file.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add spaced file"], cwd=tmp_path, check=True)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+def test_tracked_file_with_a_space_in_its_name_is_reported(git_repo, run_backstop):
+    target = _write(git_repo, "pkg/my file.py", "pass\n")
+    subprocess.run(["git", "add", "pkg/my file.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add spaced file"], cwd=git_repo, check=True)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
     with target.open("a") as handle:
         handle.write("# updated on 2026-09-24 with a fix (issue #482)\nVALUE = 1\n")
     _touch_ahead(target)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "my file.py" in context
     assert "BRIGHT LINE" in context
 
 
-def test_added_line_starting_with_plus_plus_does_not_break_a_later_hunk(tmp_path):
-    _init_git_repo(tmp_path)
+def test_added_line_starting_with_plus_plus_does_not_break_a_later_hunk(git_repo, run_backstop):
     original = "\n".join(f"line_{n} = {n}" for n in range(1, 11)) + "\n"
-    target = _write(tmp_path, "pkg/tracked.py", original)
-    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+    target = _write(git_repo, "pkg/tracked.py", original)
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=git_repo, check=True)
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
 
     lines = [f"line_{n} = {n}" for n in range(1, 11)]
     lines.insert(1, "++ this looks like a diff header but is not")
@@ -783,27 +737,25 @@ def test_added_line_starting_with_plus_plus_does_not_break_a_later_hunk(tmp_path
     target.write_text("\n".join(lines) + "\n")
     _touch_ahead(target)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "tracked.py" in context
     assert "date, measurement, or SHA" in context
 
 
-def test_candidate_missing_from_disk_warns_with_its_path(tmp_path, monkeypatch, capsys):
-    _init_git_repo(tmp_path)
-    target = _write(tmp_path, "pkg/gone.py", "pass\n")
-    subprocess.run(["git", "add", "pkg/gone.py"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add gone"], cwd=tmp_path, check=True)
+def test_candidate_missing_from_disk_warns_with_its_path(git_repo, monkeypatch, capsys):
+    target = _write(git_repo, "pkg/gone.py", "pass\n")
+    subprocess.run(["git", "add", "pkg/gone.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add gone"], cwd=git_repo, check=True)
     with target.open("a") as handle:
         handle.write("VALUE = 1\n")
     _touch_ahead(target)
     module = _import_bash_backstop()
     monkeypatch.setattr(module.time, "time", lambda: _FIXED_CLOCK)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(git_repo / "state" / "state.json"))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
     module._run()
 
@@ -836,20 +788,18 @@ def test_tracked_diff_timeout_is_caught_and_warned(tmp_path, monkeypatch, capsys
     assert "timed out" in capsys.readouterr().err.lower()
 
 
-def test_heredoc_written_jinja_with_an_issue_reference_is_reported_as_a_bright_line(tmp_path):
-    _init_git_repo(tmp_path)
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    baseline = _run(payload, env)
-    assert baseline.stdout == ""
+def test_heredoc_written_jinja_with_an_issue_reference_is_reported_as_a_bright_line(git_repo, run_backstop):
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    baseline = run_backstop(payload, state_path)
+    assert baseline == ""
 
-    target = _write(tmp_path, "templates/thing.jinja", "{# fixes #482 by capping retries #}\nkey: {{ value }}\n")
+    target = _write(git_repo, "templates/thing.jinja", "{# fixes #482 by capping retries #}\nkey: {{ value }}\n")
     _touch_ahead(target)
 
-    result = _run(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "BRIGHT LINE" in context
     assert "thing.jinja" in context

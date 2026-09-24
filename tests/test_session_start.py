@@ -6,8 +6,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from conftest import _FIXED_CLOCK
+
 _SCRIPT_PATH = Path(__file__).resolve().parent.parent / "hooks" / "session_start.py"
-_FIXED_CLOCK = 1_700_000_000
 
 
 def _import_session_start():
@@ -50,7 +51,7 @@ def test_session_start_seeds_a_stamp_for_the_session_id(tmp_path, monkeypatch):
 
     stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
     stamps = json.loads(stamps_path.read_text())
-    assert stamps["session-a"] == _FIXED_CLOCK
+    assert stamps["session-a"] == int(_FIXED_CLOCK)
 
 
 def test_second_session_start_call_for_the_same_id_leaves_the_stamp_unchanged(tmp_path):
