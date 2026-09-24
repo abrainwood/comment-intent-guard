@@ -10,6 +10,7 @@ import comment_intent_guard as guard  # noqa: E402
 
 _TRACKED_GLOBS = ["*.py", "*.yaml", "*.yml", "*.jinja", "*.j2"]
 _MAX_CANDIDATES = 200
+_GIT_TIMEOUT_SECONDS = 5
 
 
 def _stamps_path():
@@ -25,9 +26,12 @@ def _repo_root(cwd):
     try:
         result = subprocess.run(
             ["git", "-C", cwd, "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT_SECONDS,
         )
     except OSError:
+        return None
+    except subprocess.TimeoutExpired:
+        guard._warn("git rev-parse --show-toplevel timed out - skipping this run")
         return None
     if result.returncode != 0:
         return None
@@ -35,17 +39,21 @@ def _repo_root(cwd):
 
 
 def _git_paths(repo_root, args):
-    result = subprocess.run(
-        ["git", "-C", repo_root, *args, "-z", "--", *_TRACKED_GLOBS],
-        capture_output=True, text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_root, *args, "-z", "--", *_TRACKED_GLOBS],
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        guard._warn(f"git {' '.join(args)} timed out - skipping this listing")
+        return []
     if result.returncode != 0:
         return []
     return [entry for entry in result.stdout.split("\0") if entry]
 
 
 def _candidate_files(repo_root):
-    changed = _git_paths(repo_root, ["diff", "--name-only", "--diff-filter=d", "HEAD"])
+    changed = _git_paths(repo_root, ["diff", "--name-only", "--diff-filter=d", "--ignore-submodules", "HEAD"])
     untracked = _git_paths(repo_root, ["ls-files", "--others", "--exclude-standard"])
     relpaths = sorted(set(changed) | set(untracked))
     return [os.path.join(repo_root, relpath) for relpath in relpaths]

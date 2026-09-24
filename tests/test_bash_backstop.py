@@ -1,3 +1,4 @@
+import importlib.util
 import json
 import os
 import subprocess
@@ -7,6 +8,13 @@ from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_PATH = _REPO_ROOT / "hooks" / "bash_backstop.py"
+
+
+def _import_bash_backstop():
+    spec = importlib.util.spec_from_file_location("bash_backstop", _SCRIPT_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run(payload, env):
@@ -197,3 +205,39 @@ def test_non_ascii_filename_is_reported_as_a_bright_line(tmp_path):
     assert result.returncode == 0
     output = json.loads(result.stdout)
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_repo_root_lookup_timeout_is_caught_and_warned(tmp_path, monkeypatch, capsys):
+    module = _import_bash_backstop()
+
+    def _raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+    monkeypatch.setattr(module.subprocess, "run", _raise_timeout)
+
+    result = module._repo_root(str(tmp_path))
+
+    assert result is None
+    assert "timed out" in capsys.readouterr().err.lower()
+
+
+def test_git_paths_timeout_is_caught_and_warned(tmp_path, monkeypatch, capsys):
+    module = _import_bash_backstop()
+
+    def _raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+    monkeypatch.setattr(module.subprocess, "run", _raise_timeout)
+
+    result = module._git_paths(str(tmp_path), ["diff", "--name-only", "HEAD"])
+
+    assert result == []
+    assert "timed out" in capsys.readouterr().err.lower()
+
+
+def test_post_tool_use_hook_entry_declares_a_ten_second_timeout():
+    hooks_config = json.loads((_REPO_ROOT / "hooks" / "hooks.json").read_text())
+
+    post_tool_use = hooks_config["hooks"]["PostToolUse"][0]["hooks"][0]
+
+    assert post_tool_use["timeout"] == 10
