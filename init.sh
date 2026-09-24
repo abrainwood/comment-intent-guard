@@ -61,6 +61,11 @@ write_report_line() {
 write_template() {
   local dest="$1" src="$2"
   if [ -e "$dest" ]; then
+    if [ "$FORCE" -eq 1 ] && ! cmp -s "$dest" "$src"; then
+      cp "$src" "$dest"
+      write_report_line "$dest" "overwritten"
+      return 0
+    fi
     write_report_line "$dest" "unchanged"
     return 0
   fi
@@ -76,9 +81,11 @@ if [ ! -e "$PRE_COMMIT_DEST" ]; then
   cp "$PRE_COMMIT_SRC" "$PRE_COMMIT_DEST"
   chmod +x "$PRE_COMMIT_DEST"
   write_report_line "$PRE_COMMIT_DEST" "created"
-else
+elif ! cmp -s "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC"; then
   cp "$PRE_COMMIT_SRC" "$PRE_COMMIT_DEST"
   chmod +x "$PRE_COMMIT_DEST"
+  write_report_line "$PRE_COMMIT_DEST" "overwritten"
+else
   write_report_line "$PRE_COMMIT_DEST" "unchanged"
 fi
 git -C "$REPO_ROOT" config core.hooksPath .githooks
@@ -87,6 +94,8 @@ echo "core.hooksPath set to .githooks"
 write_template "$WORKFLOW_DEST" "$WORKFLOW_SRC"
 
 if [ ! -f "$CLAUDE_MD" ] || ! grep -qF "$CLAUDE_MD_MARKER" "$CLAUDE_MD"; then
+  claude_md_existed=0
+  [ -f "$CLAUDE_MD" ] && claude_md_existed=1
   if [ -s "$CLAUDE_MD" ] && [ "$(tail -c1 "$CLAUDE_MD")" != "" ]; then
     echo "" >> "$CLAUDE_MD"
   fi
@@ -95,7 +104,11 @@ if [ ! -f "$CLAUDE_MD" ] || ! grep -qF "$CLAUDE_MD_MARKER" "$CLAUDE_MD"; then
     echo "$CLAUDE_MD_MARKER"
     echo "Self-documenting code is enforced here by the comment-intent-guard plugin. Run /comment-intent-guard:comment-guard-init in Claude Code, or comment-intent-guard init on the command line, if these files are missing."
   } >> "$CLAUDE_MD"
-  write_report_line "$CLAUDE_MD" "created"
+  if [ "$claude_md_existed" -eq 1 ]; then
+    write_report_line "$CLAUDE_MD" "appended"
+  else
+    write_report_line "$CLAUDE_MD" "created"
+  fi
 else
   write_report_line "$CLAUDE_MD" "unchanged"
 fi

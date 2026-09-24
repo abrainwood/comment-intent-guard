@@ -134,6 +134,7 @@ def test_force_overwrites_a_stale_marked_pre_commit(tmp_path):
 
     assert result.returncode == 0
     assert stale.read_text() == (_REPO_ROOT / "templates" / "pre-commit.sh").read_text()
+    assert "overwritten .githooks/pre-commit" in result.stdout
 
 
 def test_foreign_pre_commit_is_refused_and_nothing_is_written(tmp_path):
@@ -149,6 +150,24 @@ def test_foreign_pre_commit_is_refused_and_nothing_is_written(tmp_path):
     assert foreign.read_text() == "#!/usr/bin/env bash\necho 'some other tool'\n"
     assert not (tmp_path / ".comment-intent-guard.json").exists()
     assert not (tmp_path / "CLAUDE.md").exists()
+
+
+def test_force_overwrites_a_differing_json_and_workflow_yml(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".comment-intent-guard.json").write_text('{"id_prefix_allowlist": ["old"]}')
+    workflow = tmp_path / ".github" / "workflows" / "comment-guard.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: something else entirely\n")
+
+    result = subprocess.run(
+        ["bash", str(_INIT_SH), "--force"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / ".comment-intent-guard.json").read_text() == (
+        _REPO_ROOT / "templates" / "comment-intent-guard.json"
+    ).read_text()
+    assert workflow.read_text() == (_REPO_ROOT / "templates" / "comment-guard.yml").read_text()
 
 
 def test_claude_md_marker_already_present_is_not_duplicated(tmp_path):
@@ -171,6 +190,7 @@ def test_claude_md_append_separates_with_a_newline_when_file_lacks_trailing_newl
     assert result.returncode == 0
     content = (tmp_path / "CLAUDE.md").read_text()
     assert "here\n\n<!-- comment-intent-guard:comment-guard-init -->" in content
+    assert "appended CLAUDE.md" in result.stdout
 
 
 _BIN_WRAPPER = _REPO_ROOT / "bin" / "comment-intent-guard"
