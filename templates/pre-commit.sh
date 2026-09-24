@@ -10,19 +10,39 @@ _resolve_from_installed_plugins() {
 import json
 import sys
 
+
+def warn_and_skip(reason):
+    print(
+        f"comment-intent-guard: WARNING - {sys.argv[1]} ({reason}) - falling through",
+        file=sys.stderr,
+    )
+    sys.exit(1)
+
+
 try:
     with open(sys.argv[1], encoding="utf-8") as handle:
         data = json.load(handle)
-except (OSError, ValueError):
-    sys.exit(1)
+except (OSError, ValueError) as exc:
+    warn_and_skip(f"{type(exc).__name__}: {exc}")
 
-candidates = [
-    (entry.get("lastUpdated", ""), entry.get("installPath"))
-    for key, entries in data.get("plugins", {}).items()
-    if key.startswith("comment-intent-guard@")
-    for entry in entries
-    if entry.get("installPath")
-]
+if not isinstance(data, dict) or not isinstance(data.get("plugins"), dict):
+    warn_and_skip("not shaped like installed_plugins.json")
+
+candidates = []
+for key, entries in data["plugins"].items():
+    if not key.startswith("comment-intent-guard@") or not isinstance(entries, list):
+        continue
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        install_path = entry.get("installPath")
+        if not isinstance(install_path, str):
+            continue
+        last_updated = entry.get("lastUpdated")
+        if not isinstance(last_updated, str):
+            last_updated = ""
+        candidates.append((last_updated, install_path))
+
 if not candidates:
     sys.exit(1)
 print(max(candidates)[1])

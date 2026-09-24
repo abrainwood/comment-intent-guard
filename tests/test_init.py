@@ -342,6 +342,48 @@ def test_script_discovery_resolves_via_installed_plugins_json(tmp_path):
     assert "bad.py" in result.stdout + result.stderr
 
 
+def test_script_discovery_warns_and_falls_through_on_malformed_installed_plugins_json(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _stage_violation(repo)
+    fake_home = tmp_path / "fake_home"
+    plugins_dir = fake_home / ".claude" / "plugins"
+    plugins_dir.mkdir(parents=True)
+    (plugins_dir / "installed_plugins.json").write_text("{not valid json")
+    env = {**os.environ, "HOME": str(fake_home)}
+    env.pop("COMMENT_INTENT_GUARD", None)
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+
+    result = subprocess.run(
+        ["bash", str(_PRE_COMMIT_SH)], cwd=repo, capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode == 0
+    assert "installed_plugins.json" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
+def test_script_discovery_warns_and_falls_through_on_wrong_shaped_installed_plugins_json(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _stage_violation(repo)
+    fake_home = tmp_path / "fake_home"
+    plugins_dir = fake_home / ".claude" / "plugins"
+    plugins_dir.mkdir(parents=True)
+    (plugins_dir / "installed_plugins.json").write_text("[]")
+    env = {**os.environ, "HOME": str(fake_home)}
+    env.pop("COMMENT_INTENT_GUARD", None)
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+
+    result = subprocess.run(
+        ["bash", str(_PRE_COMMIT_SH)], cwd=repo, capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode == 0
+    assert "installed_plugins.json" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_script_discovery_falls_back_to_newest_under_claude_plugins_cache_dir(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
