@@ -19,6 +19,9 @@ on:
         type: string
         default: "comment-intent-guard--v1.0.0"
 
+permissions:
+  contents: read
+
 jobs:
   gate:
     if: github.event_name == 'pull_request'
@@ -44,9 +47,15 @@ jobs:
           PATHS: ${{ inputs.paths }}
         run: |
           set -uo pipefail
+          # Word-split PATHS without letting the shell glob each pattern
+          # against the runner's cwd first - that would silently narrow a
+          # pattern like *.py to root-level matches before git ever sees it.
+          set -f
+          read -ra patterns <<< "${PATHS}"
+          set +f
           # --base only diff-scopes advisory findings; a blocking finding
           # anywhere in a listed file's content still fails the build.
-          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" -- ${PATHS})
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" -- "${patterns[@]}")
           if [ "${#files[@]}" -eq 0 ]; then
             echo "No changed files matching '${PATHS}' - nothing for the guard to check."
             exit 0

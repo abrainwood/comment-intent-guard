@@ -20,6 +20,7 @@ def test_gate_yml_is_a_reusable_workflow_with_a_python_version_input_defaulting_
 
     inputs = triggers["workflow_call"]["inputs"]
     assert inputs["python-version"]["default"] == "3.12"
+    assert workflow["permissions"] == {"contents": "read"}
 
 
 def _run_step_script(workflow):
@@ -40,6 +41,17 @@ def test_gate_run_step_handles_exit_codes_0_1_3_and_4():
     assert "3)" in script or "3|4)" in script
     assert "4)" in script or "3|4)" in script
     assert "::warning" in script
+
+
+def test_gate_run_step_disables_globbing_before_word_splitting_paths():
+    script = _run_step_script(_load_gate())
+
+    diff_line = next(line for line in script.splitlines() if "git diff --name-only" in line)
+    set_f_index = script.index("set -f")
+    diff_line_index = script.index(diff_line)
+
+    assert set_f_index < diff_line_index
+    assert "${PATHS}" not in diff_line
 
 
 _TEMPLATE_YML = _REPO_ROOT / "templates" / "comment-guard.yml"
