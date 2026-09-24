@@ -19,6 +19,70 @@ ROOT_DIR="$(cd "$BIN_DIR/.." && pwd -P)"
 subcommand="${1:-}"
 [ $# -gt 0 ] && shift
 
+_SCAN_PATHSPEC="*.py *.yaml *.yml *.jinja *.j2"
+
+# Runs the guard over every NUL-separated path in list_file, with the given
+# fixed args ahead of the path list. Sets $code to its exit status. IFS is
+# narrowed to newline (not cleared) so filenames with spaces survive the
+# unquoted expansion below, and globbing is disabled so a literal * in a
+# filename isn't expanded against the cwd.
+run_guard_over() {
+  list_file="$1"
+  shift
+  save_ifs="$IFS"
+  IFS="
+"
+  set -f
+  # shellcheck disable=SC2046,SC2086
+  set -- "$@" $(tr '\0' '\n' < "$list_file")
+  set +f
+  IFS="$save_ifs"
+  set +e
+  python3 "$ROOT_DIR/comment_intent_guard.py" "$@"
+  code=$?
+  set -e
+}
+
+cmd_scan() {
+  if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+    echo "comment-intent-guard scan: not inside a git repository" >&2
+    exit 2
+  fi
+  cd "$repo_root" || exit 2
+
+  tracked_file="$(mktemp)"
+  untracked_file="$(mktemp)"
+  trap 'rm -f "$tracked_file" "$untracked_file"' EXIT
+
+  # shellcheck disable=SC2086 # intentional word-splitting of the fixed pathspec list
+  git diff --name-only -z --diff-filter=d HEAD -- $_SCAN_PATHSPEC > "$tracked_file"
+  # shellcheck disable=SC2086
+  git ls-files --others --exclude-standard -z -- $_SCAN_PATHSPEC > "$untracked_file"
+
+  if [ ! -s "$tracked_file" ] && [ ! -s "$untracked_file" ]; then
+    echo "nothing uncommitted to scan"
+    exit 0
+  fi
+
+  overall=0
+
+  if [ -s "$tracked_file" ]; then
+    run_guard_over "$tracked_file" --base HEAD
+    if [ "$code" -gt "$overall" ]; then
+      overall="$code"
+    fi
+  fi
+
+  if [ -s "$untracked_file" ]; then
+    run_guard_over "$untracked_file" --all
+    if [ "$code" -gt "$overall" ]; then
+      overall="$code"
+    fi
+  fi
+
+  exit "$overall"
+}
+
 case "$subcommand" in
   init)
     exec bash "$ROOT_DIR/init.sh" "$@"
@@ -26,8 +90,11 @@ case "$subcommand" in
   check)
     exec python3 "$ROOT_DIR/comment_intent_guard.py" "$@"
     ;;
+  scan)
+    cmd_scan
+    ;;
   *)
-    echo "usage: comment-intent-guard <init|check> [args...]" >&2
+    echo "usage: comment-intent-guard <init|check|scan> [args...]" >&2
     exit 2
     ;;
 esac
