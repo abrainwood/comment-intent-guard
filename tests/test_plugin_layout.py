@@ -21,8 +21,20 @@ guard = _load_module()
 _PLUGIN_JSON = _REPO_ROOT / ".claude-plugin" / "plugin.json"
 _MARKETPLACE_JSON = _REPO_ROOT / ".claude-plugin" / "marketplace.json"
 _HOOKS_JSON = _REPO_ROOT / "hooks" / "hooks.json"
+_SKILL_MD = _REPO_ROOT / "skills" / "self-documenting-code" / "SKILL.md"
 
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+_FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n", re.DOTALL)
+
+
+def _parse_frontmatter(text):
+    match = _FRONTMATTER_RE.match(text)
+    assert match, "expected a --- delimited frontmatter block"
+    fields = {}
+    for line in match.group(1).splitlines():
+        key, _, value = line.partition(":")
+        fields[key.strip()] = value.strip()
+    return fields
 
 
 def test_plugin_json_has_name_version_and_description():
@@ -107,3 +119,10 @@ def test_e2e_write_denied_when_run_as_a_plugin_with_claude_plugin_root_set(tmp_p
 
     output = json.loads(result.stdout)
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_skill_md_frontmatter_has_a_name_and_a_non_empty_description():
+    fields = _parse_frontmatter(_SKILL_MD.read_text())
+
+    assert fields["name"] == "self-documenting-code"
+    assert fields["description"]
