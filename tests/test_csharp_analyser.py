@@ -570,3 +570,38 @@ def test_block_comment_containing_an_unmatched_quote_still_ends_at_the_real_clos
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == [("block", 0, 0, ' he said "hi ')]
+
+
+def test_dollar_dollar_raw_interpolated_string_with_json_braces_has_no_findings():
+    text = (
+        'var s = $$"""\n'
+        '{"a": {{x}} } // not comment #9\n'
+        '""";\n'
+    )
+
+    blocking, findings = guard._scan_csharp_comments(text)
+
+    assert blocking == []
+    assert findings == []
+
+
+def test_dollar_raw_interpolated_string_with_single_brace_hole_has_no_findings():
+    text = (
+        'var s = $"""\n'
+        '{x} // not comment #9\n'
+        '""";\n'
+    )
+
+    blocking, findings = guard._scan_csharp_comments(text)
+
+    assert blocking == []
+    assert findings == []
+
+
+def test_dollar_dollar_raw_interpolated_string_single_line_has_no_findings():
+    text = 'var s = $$"""{{x}} and { "//q #5" }""";\n'
+
+    blocking, findings = guard._scan_csharp_comments(text)
+
+    assert blocking == []
+    assert findings == []

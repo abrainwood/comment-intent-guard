@@ -814,6 +814,14 @@ def _csharp_skip_string(text, start):
     return i
 
 
+def _csharp_dollar_run_length(text, i):
+    n = len(text)
+    run = 0
+    while i + run < n and text[i + run] == "$":
+        run += 1
+    return run
+
+
 def _csharp_try_skip_literal(text, i):
     n = len(text)
     ch = text[i]
@@ -821,10 +829,20 @@ def _csharp_try_skip_literal(text, i):
         return _csharp_skip_verbatim_string(text, i + 1)
     if ch == "@" and i + 2 < n and text[i + 1] == "$" and text[i + 2] == '"':
         return _csharp_skip_interpolated_string(text, i + 2, verbatim=True)
-    if ch == "$" and i + 2 < n and text[i + 1] == "@" and text[i + 2] == '"':
-        return _csharp_skip_interpolated_string(text, i + 2, verbatim=True)
-    if ch == "$" and i + 1 < n and text[i + 1] == '"':
-        return _csharp_skip_interpolated_string(text, i + 1, verbatim=False)
+    if ch == "$":
+        dollar_run = _csharp_dollar_run_length(text, i)
+        q = i + dollar_run
+        if q < n and text[q] == "@" and q + 1 < n and text[q + 1] == '"':
+            return _csharp_skip_interpolated_string(text, q + 1, verbatim=True)
+        if q < n and text[q] == '"':
+            quote_run = 1
+            while q + quote_run < n and text[q + quote_run] == '"':
+                quote_run += 1
+            if quote_run >= 3:
+                return _csharp_skip_raw_interpolated_string(text, q, quote_run, dollar_run)
+            if dollar_run == 1:
+                return _csharp_skip_interpolated_string(text, q, verbatim=False)
+        return None
     if ch == '"':
         quote_run = 1
         while i + quote_run < n and text[i + quote_run] == '"':
@@ -835,6 +853,57 @@ def _csharp_try_skip_literal(text, i):
     if ch == "'":
         return _csharp_skip_char_literal(text, i)
     return None
+
+
+def _csharp_skip_raw_interpolation_hole(text, start, brace_count):
+    i = start
+    n = len(text)
+    depth = 1
+    while i < n:
+        literal_end = _csharp_try_skip_literal(text, i)
+        if literal_end is not None:
+            i = literal_end
+            continue
+        if text[i] == "{":
+            depth += 1
+            i += 1
+            continue
+        if text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                close_run = 1
+                while close_run < brace_count and i + close_run < n and text[i + close_run] == "}":
+                    close_run += 1
+                return i + close_run
+            i += 1
+            continue
+        i += 1
+    return i
+
+
+def _csharp_skip_raw_interpolated_string(text, quote_index, quote_run, dollar_run):
+    i = quote_index + quote_run
+    n = len(text)
+    while i < n:
+        if text[i] == "{":
+            brace_run = 1
+            while i + brace_run < n and text[i + brace_run] == "{":
+                brace_run += 1
+            if brace_run >= dollar_run:
+                i = _csharp_skip_raw_interpolation_hole(text, i + dollar_run, dollar_run)
+                continue
+            i += brace_run
+            continue
+        if text[i] == '"':
+            close_run = 1
+            while i + close_run < n and text[i + close_run] == '"':
+                close_run += 1
+            if close_run >= quote_run:
+                return i + close_run
+            i += close_run
+            continue
+        i += 1
+    return i
 
 
 def _csharp_skip_interpolation_hole(text, start):
