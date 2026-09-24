@@ -83,6 +83,10 @@ def _run():
     if repo_root is None:
         return
 
+    # Captured before listing/scanning so the stamp we persist can never be
+    # later than the mtimes it is meant to bound - see the >= comparison below.
+    now = int(time.time())
+
     candidates = _candidate_files(repo_root)
     if len(candidates) > _MAX_CANDIDATES:
         guard._warn(
@@ -97,7 +101,7 @@ def _run():
     if session_key is not None and session_key not in stamps:
         # First call for a session establishes the mtime baseline; the backstop
         # covers writes made during this session, not the repo's pre-existing state.
-        stamps[session_key] = time.time()
+        stamps[session_key] = now
         guard._save_state(stamps_path, stamps)
         return
 
@@ -108,7 +112,9 @@ def _run():
             mtime = os.path.getmtime(candidate)
         except OSError:
             continue
-        if mtime > last_run:
+        # mtime resolution is one second on some filesystems; >= trades an
+        # occasional duplicate report for never missing a same-second write.
+        if int(mtime) >= last_run:
             fresh.append(candidate)
 
     lines = []
@@ -129,8 +135,8 @@ def _run():
             advisory = guard._restrict_to_added_lines(advisory, added)
         lines.extend(_findings_message(file_path, blocking, advisory))
 
-    if isinstance(session_id, str):
-        stamps[session_id] = time.time()
+    if session_key is not None:
+        stamps[session_key] = now
         guard._save_state(stamps_path, stamps)
 
     if not lines:

@@ -88,21 +88,42 @@ def test_git_repo_with_no_changes_produces_no_output(tmp_path):
     assert result.stdout == ""
 
 
+def _seed_stamp(tmp_path, session_id, stamp):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(exist_ok=True)
+    (state_dir / "bash_backstop_stamps.json").write_text(json.dumps({session_id: stamp}))
+    return str(state_dir / "state.json")
+
+
 def test_same_session_second_call_with_no_new_mtime_produces_no_output(tmp_path):
     _init_git_repo(tmp_path)
+    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    stamp = 1_700_000_000
+    os.utime(target, (stamp - 10, stamp - 10))
+    state_path = _seed_stamp(tmp_path, "session-a", stamp)
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    baseline = _run(payload, env)
-    assert baseline.stdout == ""
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=state_path)
 
-    _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    result = _run(payload, env)
 
-    first = _run(payload, env)
-    second = _run(payload, env)
+    assert result.returncode == 0
+    assert result.stdout == ""
 
-    assert json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert second.returncode == 0
-    assert second.stdout == ""
+
+def test_mtime_equal_to_the_stamp_is_reported(tmp_path):
+    _init_git_repo(tmp_path)
+    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    stamp = 1_700_000_000
+    os.utime(target, (stamp, stamp))
+    state_path = _seed_stamp(tmp_path, "session-a", stamp)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=state_path)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
 
 
 def test_a_different_session_id_is_reported_again(tmp_path):
