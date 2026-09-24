@@ -126,3 +126,16 @@ def test_skill_md_frontmatter_has_a_name_and_a_non_empty_description():
 
     assert fields["name"] == "self-documenting-code"
     assert fields["description"]
+
+
+def test_hooks_json_wires_sessionstart_on_startup_resume_and_compact():
+    hooks = json.loads(_HOOKS_JSON.read_text())
+
+    entries = hooks["hooks"]["SessionStart"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["matcher"] == "startup|resume|compact"
+
+    commands = [step["command"] for step in entry["hooks"]]
+    assert len(commands) == 1
+    assert "${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py" in commands[0]
