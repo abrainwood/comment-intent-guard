@@ -664,3 +664,61 @@ def test_candidate_missing_from_disk_warns_with_its_path(tmp_path, monkeypatch, 
     module._run()
 
     assert "gone.py" in capsys.readouterr().err
+
+
+def test_tracked_diff_timeout_is_caught_and_warned(tmp_path, monkeypatch, capsys):
+    module = _import_bash_backstop()
+
+    def _raise_timeout(*args, **kwargs):
+        raise subprocess.TimeoutExpired(cmd="git", timeout=5)
+
+    monkeypatch.setattr(module.subprocess, "run", _raise_timeout)
+
+    result = module._tracked_diff_added_lines(str(tmp_path), set())
+
+    assert result == {}
+    assert "timed out" in capsys.readouterr().err.lower()
+
+
+def test_heredoc_written_jinja_with_an_issue_reference_is_reported_as_a_bright_line(tmp_path):
+    _init_git_repo(tmp_path)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    baseline = _run(payload, env)
+    assert baseline.stdout == ""
+
+    target = _write(tmp_path, "templates/thing.jinja", "{# fixes #482 by capping retries #}\nkey: {{ value }}\n")
+    _touch_future(target)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "BRIGHT LINE" in context
+    assert "thing.jinja" in context
+
+
+def test_over_the_cap_skips_before_any_per_file_read_or_stat(tmp_path):
+    _init_git_repo(tmp_path)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    targets = [_write(tmp_path, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n") for n in range(200)]
+    unreadable = tmp_path / "pkg" / "unreadable.py"
+    unreadable.write_text("pass\n")
+    unreadable.chmod(0o000)
+    for target in [*targets, unreadable]:
+        _touch_future(target)
+
+    try:
+        result = _run(payload, env)
+    finally:
+        unreadable.chmod(0o644)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert "200" in result.stderr
+    assert "could not read" not in result.stderr
+    assert "could not stat" not in result.stderr
