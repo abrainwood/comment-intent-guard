@@ -6,4 +6,4 @@ on:
 
 jobs:
   comment-guard:
-    uses: abrainwood/comment-intent-guard/.github/workflows/gate.yml@comment-intent-guard--v1.0.0
+    uses: abrainwood/comment-intent-guard/.github/workflows/gate.yml@comment-intent-guard--v1.1.0

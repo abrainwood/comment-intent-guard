@@ -17,7 +17,7 @@ on:
       guard-ref:
         description: Tag of abrainwood/comment-intent-guard to check the guard out from.
         type: string
-        default: "comment-intent-guard--v1.0.0"
+        default: "comment-intent-guard--v1.1.0"
 
 permissions:
   contents: read
