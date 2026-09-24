@@ -60,6 +60,11 @@ def _repo_root(cwd):
     return result.stdout.strip()
 
 
+def _is_no_head_yet(result):
+    stderr = result.stderr.lower()
+    return result.returncode == 128 and ("unknown revision" in stderr or "bad revision" in stderr)
+
+
 def _git_paths(repo_root, args):
     try:
         result = subprocess.run(
@@ -70,15 +75,59 @@ def _git_paths(repo_root, args):
         guard._warn(f"git {' '.join(args)} timed out - skipping this listing", prefix="bash_backstop")
         return []
     if result.returncode != 0:
+        if not _is_no_head_yet(result):
+            guard._warn(
+                f"git {' '.join(args)} failed (exit {result.returncode}): {result.stderr.strip()}",
+                prefix="bash_backstop",
+            )
         return []
     return [entry for entry in result.stdout.split("\0") if entry]
 
 
+def _parse_diff_added_lines(diff_output):
+    added_by_relpath = {}
+    current_relpath = None
+    for line in diff_output.splitlines():
+        if line.startswith("+++ "):
+            path_part = line[len("+++ "):]
+            current_relpath = None if path_part == "/dev/null" else path_part.removeprefix("b/")
+            if current_relpath is not None:
+                added_by_relpath.setdefault(current_relpath, set())
+            continue
+        match = guard._HUNK_HEADER_RE.match(line)
+        if match is not None and current_relpath is not None:
+            start = int(match.group(1))
+            count = int(match.group(2)) if match.group(2) is not None else 1
+            added_by_relpath[current_relpath].update(range(start, start + count))
+    return added_by_relpath
+
+
+def _tracked_diff_added_lines(repo_root):
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo_root, "-c", "core.quotePath=false", "diff", "-U0", "--no-color", "-z",
+             "--ignore-submodules", "--diff-filter=d", "HEAD", "--", *_TRACKED_GLOBS],
+            capture_output=True, text=True, timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        guard._warn("git diff HEAD timed out - skipping this run", prefix="bash_backstop")
+        return {}
+    if result.returncode != 0:
+        if not _is_no_head_yet(result):
+            guard._warn(
+                f"git diff HEAD failed (exit {result.returncode}): {result.stderr.strip()}",
+                prefix="bash_backstop",
+            )
+        return {}
+    return _parse_diff_added_lines(result.stdout)
+
+
 def _candidate_files(repo_root):
-    changed = _git_paths(repo_root, ["diff", "--name-only", "--diff-filter=d", "--ignore-submodules", "HEAD"])
+    added_by_relpath = _tracked_diff_added_lines(repo_root)
     untracked = _git_paths(repo_root, ["ls-files", "--others", "--exclude-standard"])
-    relpaths = sorted(set(changed) | set(untracked))
-    return [os.path.join(repo_root, relpath) for relpath in relpaths]
+    relpaths = sorted(set(added_by_relpath) | set(untracked))
+    candidates = [os.path.join(repo_root, relpath) for relpath in relpaths]
+    return candidates, added_by_relpath
 
 
 def _findings_message(file_path, blocking, advisory):
@@ -132,7 +181,7 @@ def _run():
     # later than the mtimes it is meant to bound - see the >= comparison below.
     now = int(time.time())
 
-    candidates = _candidate_files(repo_root)
+    candidates, added_by_relpath = _candidate_files(repo_root)
     if len(candidates) > _MAX_CANDIDATES:
         guard._warn(
             f"{len(candidates)} changed files exceeds the {_MAX_CANDIDATES}-file cap - skipping this run",
@@ -175,7 +224,8 @@ def _run():
         except guard.AnalysisUnavailable as exc:
             blocking = getattr(exc, "blocking", [])
             advisory = []
-        added = guard._added_line_numbers("HEAD", file_path)
+        relpath = os.path.relpath(file_path, repo_root)
+        added = added_by_relpath.get(relpath)
         if added is not None:
             advisory = guard._restrict_to_added_lines(advisory, added)
         lines.extend(_findings_message(file_path, blocking, advisory))
