@@ -392,3 +392,59 @@ def test_exactly_200_candidates_does_not_warn(tmp_path):
 
     assert result.returncode == 0
     assert result.stderr == ""
+
+
+def test_modified_tracked_file_is_reported_as_a_bright_line(tmp_path):
+    _init_git_repo(tmp_path)
+    tracked = _write(tmp_path, "tests/test_thing.py", "def test_x():\n    pass\n")
+    subprocess.run(["git", "add", "tests/test_thing.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked test"], cwd=tmp_path, check=True)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    tracked.write_text('def test_x():\n    """doc"""\n')
+    _touch_future(tracked)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert "bright line" in output["hookSpecificOutput"]["additionalContext"].lower()
+
+
+def test_cwd_in_subdirectory_of_repo_still_finds_changes(tmp_path):
+    _init_git_repo(tmp_path)
+    subdir = tmp_path / "pkg" / "sub"
+    subdir.mkdir(parents=True)
+    payload = {"session_id": "session-a", "cwd": str(subdir), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    _touch_future(target)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_import_of_comment_intent_guard_works_when_launched_from_an_unrelated_cwd(tmp_path):
+    _init_git_repo(tmp_path)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+
+    result = subprocess.run(
+        [sys.executable, str(_SCRIPT_PATH)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+        cwd=str(tmp_path),  # a directory that does not contain comment_intent_guard.py
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
