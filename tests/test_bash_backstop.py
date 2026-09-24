@@ -231,6 +231,22 @@ def test_non_ascii_filename_is_reported_as_a_bright_line(tmp_path):
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
 
 
+def test_unquote_git_header_path_handles_mixed_raw_and_octal_escapes_from_quote_path_false(tmp_path):
+    module = _import_bash_backstop()
+
+    raw = '"b/a\\"☃.py"'
+
+    assert module._unquote_git_header_path(raw) == 'b/a"☃.py'
+
+
+def test_unquote_git_header_path_handles_a_fully_octal_quoted_path(tmp_path):
+    module = _import_bash_backstop()
+
+    raw = '"b/a\\"\\342\\230\\203.py"'
+
+    assert module._unquote_git_header_path(raw) == 'b/a"☃.py'
+
+
 def test_repo_root_lookup_timeout_is_caught_and_warned(tmp_path, monkeypatch, capsys):
     module = _import_bash_backstop()
 

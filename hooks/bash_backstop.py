@@ -58,14 +58,48 @@ def _git_paths(repo_root, args):
     return [entry for entry in result.stdout.split("\0") if entry]
 
 
+_C_QUOTE_SIMPLE_ESCAPES = {
+    '"': b'"', "\\": b"\\", "n": b"\n", "t": b"\t",
+    "a": b"\a", "b": b"\b", "f": b"\f", "r": b"\r", "v": b"\v",
+}
+
+
+def _c_unquote_body(body):
+    out = bytearray()
+    i, n = 0, len(body)
+    while i < n:
+        char = body[i]
+        if char != "\\" or i + 1 >= n:
+            out += char.encode("utf-8")
+            i += 1
+            continue
+        escaped = body[i + 1]
+        simple = _C_QUOTE_SIMPLE_ESCAPES.get(escaped)
+        if simple is not None:
+            out += simple
+            i += 2
+            continue
+        if "0" <= escaped <= "7":
+            j = i + 1
+            end = min(j + 3, n)
+            while j < end and "0" <= body[j] <= "7":
+                j += 1
+            out.append(int(body[i + 1:j], 8) & 0xFF)
+            i = j
+            continue
+        out += body[i:i + 2].encode("utf-8")
+        i += 2
+    return out
+
+
 def _unquote_git_header_path(raw):
     # A path with a space gets a trailing tab (git's own disambiguation);
     # a path with control characters gets wrapped in C-quotes instead.
     raw = raw.removesuffix("\t")
     if raw.startswith('"') and raw.endswith('"'):
         try:
-            raw = raw[1:-1].encode("latin1").decode("unicode_escape").encode("latin1").decode("utf-8")
-        except (UnicodeDecodeError, UnicodeEncodeError):
+            return _c_unquote_body(raw[1:-1]).decode("utf-8")
+        except UnicodeDecodeError:
             pass
     return raw
 
