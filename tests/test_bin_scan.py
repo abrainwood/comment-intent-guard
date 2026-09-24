@@ -127,3 +127,39 @@ def test_scan_handles_a_non_ascii_untracked_filename(tmp_path):
 
     assert result.returncode == 3
     assert "café.py" in result.stdout + result.stderr
+
+
+def test_scan_ignores_a_txt_file(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    (tmp_path / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert "notes.txt" not in result.stdout + result.stderr
+
+
+def test_scan_pathspec_excludes_txt_files_from_the_guard_invocation(tmp_path):
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "bin").mkdir(parents=True)
+    wrapper_copy = plugin_root / "bin" / "comment-intent-guard"
+    wrapper_copy.write_bytes(_BIN_WRAPPER.read_bytes())
+    wrapper_copy.chmod(0o755)
+    (plugin_root / "comment_intent_guard.py").write_text(
+        "import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit(1)\n"
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo_with_a_commit(repo)
+    (repo / "checked.py").write_text("x\n")
+    (repo / "notes.txt").write_text("x\n")
+
+    result = subprocess.run(
+        ["sh", str(wrapper_copy), "scan"], cwd=repo, capture_output=True, text=True
+    )
+
+    passed_args = [a for a in result.stdout.split("ARGV:", 1)[1].split() if a != "--all"]
+    assert set(passed_args) == {"checked.py"}
