@@ -627,3 +627,17 @@ def test_doc_comment_after_the_attribute_and_before_the_signature_is_blocked():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert any("no caller" in message for message, _ in violations)
+
+
+def test_doc_comment_before_an_attribute_with_a_bracket_inside_a_string_argument_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        '[Fact(DisplayName = "a]b")]\n'
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("no caller" in message for message, _ in violations)

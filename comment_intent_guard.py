@@ -654,7 +654,6 @@ def _scan_csharp_comment_spans(spans, lines):
 _CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Fact", "Theory", "Test", "TestCase", "TestMethod"})
 _CSHARP_ATTRIBUTE_NAME_RE = re.compile(r"[\[,]\s*([A-Za-z_][A-Za-z0-9_.]*)")
 _CSHARP_METHOD_NAME_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(")
-_CSHARP_ATTR_LINE_RE = re.compile(r"^\s*((?:\[[^\]]*\]\s*)+)(.*)$")
 
 
 def _is_csharp_test_attribute(name):
@@ -662,9 +661,44 @@ def _is_csharp_test_attribute(name):
     return name in _CSHARP_TEST_ATTRIBUTE_NAMES or name.removesuffix("Attribute") in _CSHARP_TEST_ATTRIBUTE_NAMES
 
 
+def _csharp_skip_attribute_bracket_group(line, i):
+    n = len(line)
+    if i >= n or line[i] != "[":
+        return None
+    k = i + 1
+    while k < n:
+        literal_end = _csharp_try_skip_literal(line, k)
+        if literal_end is not None:
+            k = literal_end
+            continue
+        if line[k] == "]":
+            return k + 1
+        k += 1
+    return None
+
+
 def _csharp_line_attribute_group(line):
-    match = _CSHARP_ATTR_LINE_RE.match(line)
-    return (match.group(1), match.group(2)) if match else None
+    n = len(line)
+    start = 0
+    while start < n and line[start] in " \t":
+        start += 1
+    match_end = None
+    pos = start
+    while True:
+        skip = pos
+        while skip < n and line[skip] in " \t":
+            skip += 1
+        end = _csharp_skip_attribute_bracket_group(line, skip)
+        if end is None:
+            break
+        trail = end
+        while trail < n and line[trail] in " \t":
+            trail += 1
+        match_end = trail
+        pos = trail
+    if match_end is None:
+        return None
+    return (line[start:match_end], line[match_end:])
 
 
 def _csharp_test_method_after_doc_block(lines, end_li):
