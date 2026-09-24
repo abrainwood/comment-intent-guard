@@ -13,7 +13,7 @@ on:
       paths:
         description: Glob override for the files to check (default guard-covered extensions).
         type: string
-        default: "*.py *.yaml *.yml *.jinja *.j2"
+        default: "*.py *.yaml *.yml *.jinja *.j2 *.cs"
       guard-ref:
         description: Tag of abrainwood/comment-intent-guard to check the guard out from.
         type: string

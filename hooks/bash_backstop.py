@@ -11,7 +11,7 @@ import comment_intent_guard as guard  # noqa: E402
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stamps as stamps_module  # noqa: E402
 
-_TRACKED_GLOBS = ["*.py", "*.yaml", "*.yml", "*.jinja", "*.j2"]
+_TRACKED_GLOBS = ["*.py", "*.yaml", "*.yml", "*.jinja", "*.j2", "*.cs"]
 _MAX_CANDIDATES = 200
 _GIT_TIMEOUT_SECONDS = 5
 _MAX_FINDINGS = 40
