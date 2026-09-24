@@ -50,6 +50,16 @@ def test_short_line_comment_run_is_not_flagged_as_oversize():
     assert not any(message.startswith("Comment run of") for message, _ in findings)
 
 
+def test_oversize_line_comment_run_is_flagged_even_with_a_leading_bom():
+    text = "﻿" + "\n".join(
+        f"// reason {i}" for i in range(guard.COMMENT_RUN_LINE_THRESHOLD + 1)
+    ) + "\nvoid M() {}\n"
+
+    _, findings = guard._scan_csharp_comments(text)
+
+    assert any(message.startswith("Comment run of") for message, _ in findings)
+
+
 def test_oversize_doc_comment_block_is_flagged():
     lines = "\n".join(f"/// reason {i}" for i in range(guard.DOCSTRING_LINE_THRESHOLD + 1))
     text = f"{lines}\nvoid M() {{}}\n"
@@ -81,6 +91,20 @@ def test_find_csharp_issue_reference_violations_returns_the_blocking_half():
     violations = guard.find_csharp_issue_reference_violations(text)
 
     assert any("issue reference" in message for message, _ in violations)
+
+
+def test_doc_comment_on_a_test_method_says_xml_doc_comment_not_docstring():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact]\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("XML doc comment" in message and "docstring" not in message for message, _ in violations)
 
 
 def test_doc_comment_on_a_fact_test_method_is_a_blocking_violation():

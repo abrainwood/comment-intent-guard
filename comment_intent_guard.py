@@ -494,10 +494,10 @@ def _opens_a_string(tok):
     return tok.type in (tokenize.STRING, tokenize.FSTRING_START)
 
 
-def _test_docstring_violation(name, row):
+def _test_docstring_violation(name, row, noun="a docstring", generic_noun="docstring"):
     return (
-        f"BLOCKED - '{name}' near line {row} opens with a docstring. A test has "
-        "no caller, so no test docstring is an external quirk or an algorithm's "
+        f"BLOCKED - '{name}' near line {row} opens with {noun}. A test has "
+        f"no caller, so no test {generic_noun} is an external quirk or an algorithm's "
         "requirement - every one is an alarm. Put it in the test name instead."
     )
 
@@ -602,7 +602,12 @@ def _csharp_comment_spans(text):
     return spans
 
 
+def _strip_csharp_bom(text):
+    return text[1:] if text.startswith("﻿") else text
+
+
 def _scan_csharp_comments(text):
+    text = _strip_csharp_bom(text)
     return _scan_csharp_comment_spans(_csharp_comment_spans(text), _split_rows(text))
 
 
@@ -694,7 +699,8 @@ def _csharp_test_doc_blocking_violations(spans, lines):
         found = _csharp_test_method_after_doc_block(lines, end_li)
         if found is not None:
             name, row = found
-            violations.append((_test_docstring_violation(name, row), (row, row)))
+            violation = _test_docstring_violation(name, row, "an XML doc comment", "XML doc comment")
+            violations.append((violation, (row, row)))
     return violations
 
 
@@ -718,6 +724,7 @@ def _csharp_blocking_violations(spans, lines, allowed_prefixes):
 
 
 def find_csharp_blocking_violations(text, file_path):
+    text = _strip_csharp_bom(text)
     allowed_prefixes = _repo_id_prefix_allowlist(file_path)
     return _csharp_blocking_violations(_csharp_comment_spans(text), _split_rows(text), allowed_prefixes)
 
@@ -1266,6 +1273,7 @@ def _findings_for_file(file_path, text):
     if file_path.endswith((".jinja", ".j2")):
         return find_jinja_issue_reference_violations(text), find_jinja_findings(text)
     if file_path.endswith(".cs"):
+        text = _strip_csharp_bom(text)
         spans = _csharp_comment_spans(text)
         lines = _split_rows(text)
         allowed_prefixes = _repo_id_prefix_allowlist(file_path)
