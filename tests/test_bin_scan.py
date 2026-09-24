@@ -1,17 +1,22 @@
+import importlib.util
 import subprocess
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _BIN_WRAPPER = _REPO_ROOT / "bin" / "comment-intent-guard"
+_MODULE_PATH = _REPO_ROOT / "comment_intent_guard.py"
 
 
-def test_scan_outside_a_git_repo_exits_2_with_a_message(tmp_path):
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+def _load_module():
+    spec = importlib.util.spec_from_file_location("bin_scan_guard", _MODULE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
-    assert result.returncode == 2
-    assert "git" in result.stderr.lower()
+
+guard = _load_module()
 
 
 def _init_repo_with_a_commit(repo_dir):
@@ -25,30 +30,40 @@ def _init_repo_with_a_commit(repo_dir):
     )
 
 
-def test_scan_on_a_clean_repo_exits_0_with_nothing_uncommitted(tmp_path):
+def test_scan_outside_a_git_repo_exits_2_with_a_message(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+
+    exit_code = guard._scan_main()
+
+    assert exit_code == 2
+    assert "git" in capsys.readouterr().err.lower()
+
+
+def test_scan_on_a_clean_repo_exits_0_with_nothing_uncommitted(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 0
-    assert "nothing uncommitted" in result.stdout
+    assert exit_code == guard._EXIT_CLEAN
+    assert "nothing uncommitted" in capsys.readouterr().out
 
 
-def test_scan_reports_an_untracked_violating_python_file_and_exits_3(tmp_path):
+def test_scan_reports_an_untracked_violating_python_file_and_exits_3(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "bad.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "bad.py" in out.out + out.err
 
 
-def test_scan_does_not_flag_a_pre_existing_advisory_touched_only_by_a_clean_append(tmp_path):
+def test_scan_does_not_flag_a_pre_existing_advisory_touched_only_by_a_clean_append(
+    tmp_path, monkeypatch, capsys
+):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     config = tmp_path / "config.yaml"
     config.write_text(
@@ -65,41 +80,42 @@ def test_scan_does_not_flag_a_pre_existing_advisory_touched_only_by_a_clean_appe
         cwd=tmp_path,
         check=True,
     )
-    pre_append_check = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "check", "--all", "config.yaml"],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-    )
-    assert pre_append_check.returncode == 1
+    monkeypatch.chdir(tmp_path)
+    pre_append_exit_code = guard._cli_main(["--all", "config.yaml"])
+    capsys.readouterr()
+    assert pre_append_exit_code == guard._EXIT_ADVISORY
 
     with config.open("a") as handle:
         handle.write("new_key: value\n")
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 0
-    assert "config.yaml" not in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_CLEAN
+    assert "config.yaml" not in out.out + out.err
 
 
-def test_scan_ignores_a_deleted_tracked_file_but_still_reports_an_untracked_violation(tmp_path):
+def test_scan_ignores_a_deleted_tracked_file_but_still_reports_an_untracked_violation(
+    tmp_path, monkeypatch, capsys
+):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "committed.py").unlink()
     (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "bad.py" in result.stdout + result.stderr
-    assert "committed.py" not in result.stdout + result.stderr
-    assert "No such file" not in result.stdout + result.stderr
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "bad.py" in combined
+    assert "committed.py" not in combined
+    assert "No such file" not in combined
 
 
-def test_scan_pathspec_is_not_shell_glob_expanded_against_the_repo_root(tmp_path):
+def test_scan_reports_a_violation_nested_in_a_subdirectory_alongside_a_top_level_match(
+    tmp_path, monkeypatch, capsys
+):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "README.md").write_text("hello\n")
     subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
@@ -108,85 +124,80 @@ def test_scan_pathspec_is_not_shell_glob_expanded_against_the_repo_root(tmp_path
         cwd=tmp_path,
         check=True,
     )
-    # A top-level match for one glob in the pathspec (top.py) sits alongside
-    # a match nested in a subdirectory (sub/bad.py). If the shell expands
-    # the pathspec's *.py against the cwd before git ever sees it, only the
-    # top-level match survives and the nested violation goes unreported.
     (tmp_path / "top.py").write_text("def add(a, b):\n    return a + b\n")
     sub = tmp_path / "sub"
     sub.mkdir()
     (sub / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "bad.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "bad.py" in out.out + out.err
 
 
-def test_scan_handles_a_non_ascii_untracked_filename(tmp_path):
+def test_scan_handles_a_non_ascii_untracked_filename(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "café.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "café.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "café.py" in out.out + out.err
 
 
-def test_scan_on_an_unborn_repo_reports_an_untracked_violation_and_exits_3(tmp_path):
+def test_scan_on_an_unborn_repo_reports_an_untracked_violation_and_exits_3(tmp_path, monkeypatch, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "bad.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "bad.py" in out.out + out.err
 
 
-def test_scan_on_an_unborn_empty_repo_exits_0_with_nothing_uncommitted(tmp_path):
+def test_scan_on_an_unborn_empty_repo_exits_0_with_nothing_uncommitted(tmp_path, monkeypatch, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 0
-    assert "nothing uncommitted" in result.stdout
+    assert exit_code == guard._EXIT_CLEAN
+    assert "nothing uncommitted" in capsys.readouterr().out
 
 
-def test_scan_on_an_unborn_repo_reports_a_staged_violation_and_exits_3(tmp_path):
+def test_scan_on_an_unborn_repo_reports_a_staged_violation_and_exits_3(tmp_path, monkeypatch, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
     subprocess.run(["git", "add", "bad.py"], cwd=tmp_path, check=True)
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "bad.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "bad.py" in out.out + out.err
 
 
-def test_scan_reports_an_untracked_violation_in_a_dash_leading_filename(tmp_path):
+def test_scan_reports_an_untracked_violation_in_a_dash_leading_filename(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "-x.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "-x.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "-x.py" in out.out + out.err
 
 
 def test_scan_reports_the_higher_of_two_exit_codes_when_both_tracked_and_untracked_have_findings(
-    tmp_path,
+    tmp_path, monkeypatch, capsys
 ):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     config = tmp_path / "config.yaml"
@@ -214,48 +225,50 @@ def test_scan_reports_the_higher_of_two_exit_codes_when_both_tracked_and_untrack
         "key: value\n"
     )
     (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "bad.py" in result.stdout + result.stderr
-    assert "config.yaml" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "bad.py" in combined
+    assert "config.yaml" in combined
 
 
-def test_scan_exits_4_and_still_prints_blocked_lines_when_a_file_is_unreadable(tmp_path):
+def test_scan_exits_4_and_still_prints_blocked_lines_when_a_file_is_unreadable(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     unreadable = tmp_path / "unreadable.py"
     unreadable.write_text("x = 1\n")
     unreadable.chmod(0o000)
     (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
     try:
-        result = subprocess.run(
-            ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-        )
+        exit_code = guard._scan_main()
     finally:
         unreadable.chmod(0o644)
 
-    assert result.returncode == 4
-    assert "BLOCKED" in result.stdout + result.stderr
-    assert "bad.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert exit_code == guard._EXIT_INTERNAL_ERROR
+    assert "BLOCKED" in combined
+    assert "bad.py" in combined
 
 
-def test_scan_reports_an_untracked_violation_in_a_filename_with_a_space(tmp_path):
+def test_scan_reports_an_untracked_violation_in_a_filename_with_a_space(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "bad file.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "bad file.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "bad file.py" in out.out + out.err
 
 
-def test_scan_reports_a_tracked_violation_in_a_filename_with_a_space(tmp_path):
+def test_scan_reports_a_tracked_violation_in_a_filename_with_a_space(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     tracked = tmp_path / "bad file.py"
     tracked.write_text("x = 1\n")
@@ -266,91 +279,81 @@ def test_scan_reports_a_tracked_violation_in_a_filename_with_a_space(tmp_path):
         check=True,
     )
     tracked.write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    assert "bad file.py" in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_BRIGHT_LINE
+    assert "bad file.py" in out.out + out.err
 
 
-def test_scan_reports_a_filename_containing_a_newline_once_and_exits_3(tmp_path):
+def test_scan_reports_a_filename_containing_a_newline_once_and_exits_3(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "bad\nname.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    combined = result.stdout + result.stderr
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert exit_code == guard._EXIT_BRIGHT_LINE
     assert "could not read" not in combined
     assert combined.count("a docstring") == 1
 
 
-def test_scan_on_an_unborn_repo_skips_a_staged_file_deleted_from_the_worktree(tmp_path):
+def test_scan_on_an_unborn_repo_skips_a_staged_file_deleted_from_the_worktree(tmp_path, monkeypatch, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     staged = tmp_path / "bad.py"
     staged.write_text('def test_x():\n    """a docstring"""\n')
     subprocess.run(["git", "add", "bad.py"], cwd=tmp_path, check=True)
     staged.unlink()
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 0
-    assert "nothing uncommitted" in result.stdout
-    assert "could not read" not in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_CLEAN
+    assert "nothing uncommitted" in out.out
+    assert "could not read" not in out.out + out.err
 
 
-def test_scan_from_a_subdirectory_reports_a_repo_relative_path(tmp_path):
+def test_scan_from_a_subdirectory_reports_a_repo_relative_path(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     sub = tmp_path / "sub"
     sub.mkdir()
     (sub / "t.py").write_text('def test_x():\n    """a docstring"""\n')
+    monkeypatch.chdir(sub)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=sub, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 3
-    combined = result.stdout + result.stderr
+    out = capsys.readouterr()
+    combined = out.out + out.err
+    assert exit_code == guard._EXIT_BRIGHT_LINE
     assert "sub/t.py:" in combined
     assert str(tmp_path) not in combined
 
 
-def test_scan_rejects_extra_arguments(tmp_path):
-    _init_repo_with_a_commit(tmp_path)
-
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan", "junk"], cwd=tmp_path, capture_output=True, text=True
-    )
-
-    assert result.returncode == 2
-    assert "usage" in (result.stdout + result.stderr).lower()
-
-
-def test_check_subcommand_rejects_the_internal_scan_flag(tmp_path):
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "check", "--scan"], cwd=tmp_path, capture_output=True, text=True
-    )
-
-    assert result.returncode == 2
-    assert "usage" in (result.stdout + result.stderr).lower()
-
-
-def test_scan_ignores_a_txt_file(tmp_path):
+def test_scan_ignores_a_txt_file(tmp_path, monkeypatch, capsys):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
+    monkeypatch.chdir(tmp_path)
 
-    result = subprocess.run(
-        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
-    )
+    exit_code = guard._scan_main()
 
-    assert result.returncode == 0
-    assert "notes.txt" not in result.stdout + result.stderr
+    out = capsys.readouterr()
+    assert exit_code == guard._EXIT_CLEAN
+    assert "notes.txt" not in out.out + out.err
+
+
+def test_main_scan_rejects_extra_arguments(monkeypatch, capsys):
+    monkeypatch.setattr(guard.sys, "argv", ["comment_intent_guard", "--scan", "junk"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        guard.main()
+
+    assert exc_info.value.code == 2
+    assert "usage" in capsys.readouterr().err.lower()
 
 
 def test_scan_delegates_listing_entirely_to_the_python_scan_mode(tmp_path):
@@ -372,3 +375,33 @@ def test_scan_delegates_listing_entirely_to_the_python_scan_mode(tmp_path):
     )
 
     assert result.stdout.strip() == "ARGV:--scan"
+
+
+def test_scan_forwards_its_own_extra_arguments_after_the_internal_scan_flag(tmp_path):
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "bin").mkdir(parents=True)
+    wrapper_copy = plugin_root / "bin" / "comment-intent-guard"
+    wrapper_copy.write_bytes(_BIN_WRAPPER.read_bytes())
+    wrapper_copy.chmod(0o755)
+    (plugin_root / "comment_intent_guard.py").write_text(
+        "import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit(0)\n"
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo_with_a_commit(repo)
+
+    result = subprocess.run(
+        ["sh", str(wrapper_copy), "scan", "junk"], cwd=repo, capture_output=True, text=True
+    )
+
+    assert result.stdout.strip() == "ARGV:--scan junk"
+
+
+def test_check_subcommand_rejects_the_internal_scan_flag(tmp_path):
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "check", "--scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 2
+    assert "usage" in (result.stdout + result.stderr).lower()
