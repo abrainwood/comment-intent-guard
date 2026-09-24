@@ -543,6 +543,26 @@ def test_pre_commit_ignores_a_staged_txt_file_but_checks_a_staged_yaml_file(tmp_
     assert "bad.yaml" in result.stdout + result.stderr
 
 
+def test_pre_commit_passes_exactly_the_checked_extensions_to_the_guard(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    stub = tmp_path / "stub_guard.py"
+    stub.write_text("import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit(1)\n")
+    checked = ["a.py", "b.yml", "c.yaml", "d.jinja", "e.j2"]
+    ignored = ["f.txt"]
+    for name in checked + ignored:
+        (tmp_path / name).write_text("x\n")
+    subprocess.run(["git", "add", *checked, *ignored], cwd=tmp_path, check=True)
+    env = {**os.environ, "COMMENT_INTENT_GUARD": str(stub)}
+
+    result = subprocess.run(
+        ["bash", str(_PRE_COMMIT_SH)], cwd=tmp_path, capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode == 0
+    passed_args = [a for a in result.stdout.split("ARGV:", 1)[1].split() if a != "--all"]
+    assert set(passed_args) == set(checked)
+
+
 def test_pre_commit_handles_a_non_ascii_staged_filename(tmp_path):
     pre_commit = _init_repo_and_get_pre_commit(tmp_path)
     violating = tmp_path / "café.py"
