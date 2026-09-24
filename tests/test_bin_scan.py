@@ -65,6 +65,14 @@ def test_scan_does_not_flag_a_pre_existing_advisory_touched_only_by_a_clean_appe
         cwd=tmp_path,
         check=True,
     )
+    pre_append_check = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "check", "--all", "config.yaml"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+    assert pre_append_check.returncode == 1
+
     with config.open("a") as handle:
         handle.write("new_key: value\n")
 
@@ -129,6 +137,131 @@ def test_scan_handles_a_non_ascii_untracked_filename(tmp_path):
     assert "café.py" in result.stdout + result.stderr
 
 
+def test_scan_on_an_unborn_repo_reports_an_untracked_violation_and_exits_3(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "bad.py" in result.stdout + result.stderr
+
+
+def test_scan_on_an_unborn_empty_repo_exits_0_with_nothing_uncommitted(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert "nothing uncommitted" in result.stdout
+
+
+def test_scan_reports_an_untracked_violation_in_a_dash_leading_filename(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    (tmp_path / "-x.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "-x.py" in result.stdout + result.stderr
+
+
+def test_scan_reports_the_higher_of_two_exit_codes_when_both_tracked_and_untracked_have_findings(
+    tmp_path,
+):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "# first reason for this shape\n"
+        "# second reason for this shape\n"
+        "# third reason for this shape\n"
+        "# fourth reason for this shape\n"
+        "# fifth reason for this shape\n"
+        "key: value\n"
+    )
+    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "init"],
+        cwd=tmp_path,
+        check=True,
+    )
+    config.write_text(
+        "# first reason for this shape\n"
+        "# second reason for this shape\n"
+        "# third reason for this shape\n"
+        "# fourth reason for this shape\n"
+        "# fifth reason for this shape\n"
+        "# sixth reason for this shape\n"
+        "key: value\n"
+    )
+    (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "bad.py" in result.stdout + result.stderr
+    assert "config.yaml" in result.stdout + result.stderr
+
+
+def test_scan_exits_4_and_still_prints_blocked_lines_when_a_file_is_unreadable(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    unreadable = tmp_path / "unreadable.py"
+    unreadable.write_text("x = 1\n")
+    unreadable.chmod(0o000)
+    (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    try:
+        result = subprocess.run(
+            ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+        )
+    finally:
+        unreadable.chmod(0o644)
+
+    assert result.returncode == 4
+    assert "BLOCKED" in result.stdout + result.stderr
+    assert "bad.py" in result.stdout + result.stderr
+
+
+def test_scan_reports_an_untracked_violation_in_a_filename_with_a_space(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    (tmp_path / "bad file.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "bad file.py" in result.stdout + result.stderr
+
+
+def test_scan_reports_a_tracked_violation_in_a_filename_with_a_space(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    tracked = tmp_path / "bad file.py"
+    tracked.write_text("x = 1\n")
+    subprocess.run(["git", "add", "bad file.py"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
+        cwd=tmp_path,
+        check=True,
+    )
+    tracked.write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "bad file.py" in result.stdout + result.stderr
+
+
 def test_scan_ignores_a_txt_file(tmp_path):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
@@ -161,5 +294,7 @@ def test_scan_pathspec_excludes_txt_files_from_the_guard_invocation(tmp_path):
         ["sh", str(wrapper_copy), "scan"], cwd=repo, capture_output=True, text=True
     )
 
-    passed_args = [a for a in result.stdout.split("ARGV:", 1)[1].split() if a != "--all"]
+    passed_args = [
+        a for a in result.stdout.split("ARGV:", 1)[1].split() if a not in ("--all", "--")
+    ]
     assert set(passed_args) == {"checked.py"}
