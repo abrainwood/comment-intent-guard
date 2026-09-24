@@ -1,5 +1,6 @@
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -31,10 +32,10 @@ def test_fresh_repo_gets_all_four_files_with_hookspath_set_and_pre_commit_execut
     pre_commit = tmp_path / ".githooks" / "pre-commit"
     assert pre_commit.stat().st_mode & 0o111
 
-    assert "created .comment-intent-guard.json" in result.stdout
-    assert "created .githooks/pre-commit" in result.stdout
-    assert "created .github/workflows/comment-guard.yml" in result.stdout
-    assert "created CLAUDE.md" in result.stdout
+    assert ".comment-intent-guard.json created" in result.stdout
+    assert ".githooks/pre-commit created" in result.stdout
+    assert ".github/workflows/comment-guard.yml created" in result.stdout
+    assert "CLAUDE.md created" in result.stdout
     assert "core.hooksPath set to .githooks" in result.stdout
 
 
@@ -43,10 +44,10 @@ def test_second_run_reports_every_file_as_unchanged(tmp_path):
 
     result = _init_tmp_repo(tmp_path)
 
-    assert "unchanged .comment-intent-guard.json" in result.stdout
-    assert "unchanged .githooks/pre-commit" in result.stdout
-    assert "unchanged .github/workflows/comment-guard.yml" in result.stdout
-    assert "unchanged CLAUDE.md" in result.stdout
+    assert ".comment-intent-guard.json unchanged" in result.stdout
+    assert ".githooks/pre-commit unchanged" in result.stdout
+    assert ".github/workflows/comment-guard.yml unchanged" in result.stdout
+    assert "CLAUDE.md unchanged" in result.stdout
 
 
 def _snapshot(tmp_path):
@@ -93,23 +94,26 @@ def test_native_git_hooks_pre_commit_is_refused_and_nothing_is_written(tmp_path)
 
 
 def _write_old_git_shim(bin_dir):
-    real_git = subprocess.run(["command", "-v", "git"], capture_output=True, text=True).stdout.strip()
-    real_git = real_git or "/usr/bin/git"
+    # git 2.26 echoes an unrecognized --path-format=absolute as a garbage
+    # output line rather than erroring, exit 0.
+    real_git = shutil.which("git")
     shim = bin_dir / "git"
     shim.write_text(
         "#!/usr/bin/env bash\n"
+        "args=()\n"
         "for a in \"$@\"; do\n"
         "  if [ \"$a\" = \"--path-format=absolute\" ]; then\n"
-        "    echo \"error: unknown option \\`path-format=absolute'\" >&2\n"
-        "    exit 129\n"
+        "    echo \"$a\"\n"
+        "  else\n"
+        "    args+=(\"$a\")\n"
         "  fi\n"
         "done\n"
-        f'exec "{real_git}" "$@"\n'
+        f'exec "{real_git}" "${{args[@]}}"\n'
     )
     shim.chmod(0o755)
 
 
-def test_native_hook_check_falls_back_on_git_older_than_2_31(tmp_path):
+def test_native_hook_check_works_when_git_garbles_the_unrecognized_path_format_flag(tmp_path):
     bin_dir = tmp_path / "oldgitbin"
     bin_dir.mkdir()
     _write_old_git_shim(bin_dir)
@@ -196,7 +200,7 @@ def test_force_overwrites_a_stale_marked_pre_commit(tmp_path):
 
     assert result.returncode == 0
     assert stale.read_text() == (_REPO_ROOT / "templates" / "pre-commit.sh").read_text()
-    assert "overwritten .githooks/pre-commit" in result.stdout
+    assert ".githooks/pre-commit overwritten" in result.stdout
 
 
 def test_foreign_pre_commit_is_left_alone_while_other_targets_are_written(tmp_path):
@@ -213,9 +217,29 @@ def test_foreign_pre_commit_is_left_alone_while_other_targets_are_written(tmp_pa
     assert (tmp_path / "CLAUDE.md").exists()
 
 
+def test_force_never_overwrites_a_foreign_unmarked_pre_commit_hook(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".githooks").mkdir()
+    foreign = tmp_path / ".githooks" / "pre-commit"
+    foreign.write_text("#!/usr/bin/env bash\necho 'some other tool'\n")
+
+    result = subprocess.run(
+        ["bash", str(_INIT_SH), "--force"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert foreign.read_text() == "#!/usr/bin/env bash\necho 'some other tool'\n"
+    assert "left alone" in result.stdout
+
+
+_WORKFLOW_COPY_INSTRUCTIONS = "# Copy into .github/workflows/ to enforce the guard on every PR."
+
+
 def _workflow_effective_content():
-    lines = (_REPO_ROOT / "templates" / "comment-guard.yml").read_text().splitlines(keepends=True)
-    return "".join(lines[1:])
+    template = (_REPO_ROOT / "templates" / "comment-guard.yml").read_text()
+    assert _WORKFLOW_COPY_INSTRUCTIONS in template
+    lines = [line for line in template.splitlines(keepends=True) if line.rstrip("\n") != _WORKFLOW_COPY_INSTRUCTIONS]
+    return "".join(lines)
 
 
 def test_force_overwrites_workflow_but_never_the_allowlist_json(tmp_path):
@@ -263,6 +287,19 @@ def test_created_workflow_yml_does_not_carry_the_copy_instructions_line(tmp_path
     assert content == _workflow_effective_content()
 
 
+def test_a_pre_1_1_workflow_carrying_the_copy_line_upgrades_instead_of_being_left_alone(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    workflow = tmp_path / ".github" / "workflows" / "comment-guard.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text((_REPO_ROOT / "templates" / "comment-guard.yml").read_text())
+
+    result = subprocess.run(["bash", str(_INIT_SH)], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode == 0
+    assert "left alone" not in result.stdout
+    assert workflow.read_text() == _workflow_effective_content()
+
+
 def test_claude_md_marker_already_present_is_not_duplicated(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     existing = "# My repo\n\n<!-- comment-intent-guard:comment-guard-init -->\nAlready wired up.\n"
@@ -283,7 +320,7 @@ def test_claude_md_append_separates_with_a_newline_when_file_lacks_trailing_newl
     assert result.returncode == 0
     content = (tmp_path / "CLAUDE.md").read_text()
     assert "here\n\n<!-- comment-intent-guard:comment-guard-init -->" in content
-    assert "appended CLAUDE.md" in result.stdout
+    assert "CLAUDE.md appended" in result.stdout
 
 
 _BIN_WRAPPER = _REPO_ROOT / "bin" / "comment-intent-guard"

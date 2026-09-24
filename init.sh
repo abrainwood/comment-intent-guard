@@ -19,11 +19,15 @@ PRE_COMMIT_SRC="$SCRIPT_DIR/templates/pre-commit.sh"
 WORKFLOW_DEST="$REPO_ROOT/.github/workflows/comment-guard.yml"
 CLAUDE_MD="$REPO_ROOT/CLAUDE.md"
 
-# The template carries an instructional comment for whoever browses the repo
-# of templates; strip it before it lands in a consumer's own workflow file.
+WORKFLOW_COPY_INSTRUCTIONS="# Copy into .github/workflows/ to enforce the guard on every PR."
+
+strip_template_instructions() {
+  grep -vFx "$WORKFLOW_COPY_INSTRUCTIONS" "$1"
+}
+
 WORKFLOW_EFFECTIVE="$(mktemp)"
 trap 'rm -f "$WORKFLOW_EFFECTIVE"' EXIT
-tail -n +2 "$SCRIPT_DIR/templates/comment-guard.yml" > "$WORKFLOW_EFFECTIVE"
+strip_template_instructions "$SCRIPT_DIR/templates/comment-guard.yml" > "$WORKFLOW_EFFECTIVE"
 
 refuse() {
   echo "init.sh: $1" >&2
@@ -37,10 +41,6 @@ fi
 
 git_common_dir_absolute() {
   local raw
-  if raw="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
-    printf '%s\n' "$raw"
-    return 0
-  fi
   raw="$(git -C "$REPO_ROOT" rev-parse --git-common-dir)"
   case "$raw" in
     /*) printf '%s\n' "$raw" ;;
@@ -53,15 +53,19 @@ if [ -e "$native_hook" ]; then
   refuse "refusing to install - a native pre-commit hook already exists at $native_hook"
 fi
 
-write_report_line() {
-  local dest="$1" verb="$2"
-  echo "$verb ${dest#"$REPO_ROOT"/}"
+PRE_COMMIT_MARKER="# comment-intent-guard pre-commit"
+
+has_pre_commit_marker() {
+  grep -qF "$PRE_COMMIT_MARKER" "$1"
 }
 
-# Per-file sync: absent -> write; present+identical -> skip silently as
-# unchanged; present+different -> left alone unless --force AND forceable.
+write_report_line() {
+  local dest="$1" verb="$2"
+  echo "${dest#"$REPO_ROOT"/} $verb"
+}
+
 sync_target() {
-  local dest="$1" src="$2" forceable="$3" merge_hint="${4:-}"
+  local dest="$1" src="$2" forceable="$3" merge_hint="${4:-}" upgrade_fn="${5:-}" force_guard_fn="${6:-}"
   if [ ! -e "$dest" ]; then
     mkdir -p "$(dirname "$dest")"
     cp "$src" "$dest"
@@ -72,26 +76,43 @@ sync_target() {
     write_report_line "$dest" "unchanged"
     return 0
   fi
-  if [ "$FORCE" -eq 1 ] && [ "$forceable" -eq 1 ]; then
+  if [ -n "$upgrade_fn" ]; then
+    local stripped
+    stripped="$(mktemp)"
+    "$upgrade_fn" "$dest" > "$stripped"
+    if cmp -s "$stripped" "$src"; then
+      cp "$src" "$dest"
+      rm -f "$stripped"
+      write_report_line "$dest" "updated (dropped stale template instructions)"
+      return 0
+    fi
+    rm -f "$stripped"
+  fi
+  local allow_force="$forceable" force_denied_reason=""
+  if [ -n "$force_guard_fn" ] && ! "$force_guard_fn" "$dest"; then
+    allow_force=0
+    force_denied_reason=" - foreign file (no comment-intent-guard marker), --force will not overwrite it"
+  fi
+  if [ "$FORCE" -eq 1 ] && [ "$allow_force" -eq 1 ]; then
     cp "$src" "$dest"
     write_report_line "$dest" "overwritten"
     return 0
   fi
-  local suffix=""
-  [ -n "$merge_hint" ] && suffix=" - $merge_hint"
+  local suffix="$force_denied_reason"
+  [ -z "$suffix" ] && [ -n "$merge_hint" ] && suffix=" - $merge_hint"
   write_report_line "$dest" "left alone (differs from template)$suffix"
 }
 
 sync_target "$JSON_DEST" "$JSON_SRC" 0 "merge the two by hand, this file is never overwritten"
 
-sync_target "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC" 1
+sync_target "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC" 1 "" "" has_pre_commit_marker
 if [ -e "$PRE_COMMIT_DEST" ] && cmp -s "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC"; then
   chmod +x "$PRE_COMMIT_DEST"
 fi
 git -C "$REPO_ROOT" config core.hooksPath .githooks
 echo "core.hooksPath set to .githooks"
 
-sync_target "$WORKFLOW_DEST" "$WORKFLOW_EFFECTIVE" 1
+sync_target "$WORKFLOW_DEST" "$WORKFLOW_EFFECTIVE" 1 "" strip_template_instructions
 
 if [ ! -f "$CLAUDE_MD" ] || ! grep -qF "$CLAUDE_MD_MARKER" "$CLAUDE_MD"; then
   claude_md_existed=0
