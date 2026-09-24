@@ -37,6 +37,13 @@ def _init_git_repo(path):
     subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "init"], cwd=path, check=True)
 
 
+def _write(path, relpath, content):
+    target = path / relpath
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content)
+    return target
+
+
 def test_non_git_cwd_produces_no_output(tmp_path):
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state.json"))
@@ -65,13 +72,6 @@ def test_heredoc_written_test_docstring_is_reported_as_a_bright_line(tmp_path):
     assert hook_output["hookEventName"] == "PostToolUse"
     assert "bright line" in hook_output["additionalContext"].lower()
     assert "test_x" in hook_output["additionalContext"]
-
-
-def _write(path, relpath, content):
-    target = path / relpath
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content)
-    return target
 
 
 def _touch_future(path, seconds=5):
