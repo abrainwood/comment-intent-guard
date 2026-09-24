@@ -1297,6 +1297,36 @@ def test_yaml_jinja_block_span_covers_the_opening_and_closing_markers():
     assert span == (2, body_line_count + 3)
 
 
+def test_find_jinja_findings_flags_an_oversize_standalone_jinja_comment_block():
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD + 1
+    body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
+    text = f"{{#\n{body_lines}\n#}}\n{{{{ value }}}}\n"
+
+    findings = guard.find_jinja_findings(text)
+
+    assert any("Jinja" in f and "block" in f for f, _ in findings)
+
+
+def test_find_jinja_findings_is_empty_for_a_short_standalone_jinja_comment():
+    text = "{# guards against the hold flipping mid-cycle #}\n{{ value }}\n"
+
+    assert guard.find_jinja_findings(text) == []
+
+
+def test_find_jinja_issue_reference_violations_blocks_a_standalone_comment_with_an_issue_reference():
+    text = "{# issue #91: the direction can flip while the hold is active #}\n"
+
+    violations = guard.find_jinja_issue_reference_violations(text)
+
+    assert any("BLOCKED" in v for v, _ in violations)
+
+
+def test_find_jinja_issue_reference_violations_is_empty_for_a_standalone_comment_with_no_issue_reference():
+    text = "{# guards against the hold flipping mid-cycle #}\n"
+
+    assert guard.find_jinja_issue_reference_violations(text) == []
+
+
 def test_yaml_jinja_comment_block_of_8_lines_or_fewer_is_not_flagged():
     body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD - 2
     body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
@@ -1754,6 +1784,69 @@ def test_single_line_hunk_header_without_a_count_adds_exactly_one_line():
         added = guard._added_line_numbers("HEAD", "a.py")
 
     assert added == {5}
+
+
+def test_added_line_numbers_against_a_real_repo_returns_only_the_appended_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text("old_key: value\n")
+    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    yaml_file.write_text("old_key: value\nnew_key_one: value\nnew_key_two: value\n")
+
+    added = guard._added_line_numbers("HEAD", str(yaml_file))
+
+    assert added == {2, 3}
+
+
+def test_cli_main_in_process_exits_3_and_prints_the_blocking_message(tmp_path, capsys):
+    py_file = tmp_path / "jira123_fix.py"
+    py_file.write_text("VALUE = 1\n")
+
+    returncode = guard._cli_main(["--all", str(py_file)])
+
+    assert returncode == guard._EXIT_BRIGHT_LINE
+    assert "jira123" in capsys.readouterr().out
+
+
+def test_hook_main_in_process_denies_a_python_bright_line_violation(monkeypatch, capsys):
+    import io
+
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "old_string": "pass\n",
+            "new_string": "# Issue #91's own branch point\npass\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_hook_main_in_process_advises_on_a_yaml_oversize_comment_run(monkeypatch, capsys):
+    import io
+
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"# reason {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/zones.yaml",
+            "content": f"{prose_lines}\nkey: value\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
 
 
 def test_cli_base_mode_on_an_untracked_file_treats_everything_as_added(tmp_path):
