@@ -1692,6 +1692,21 @@ def test_added_line_numbers_warns_and_returns_none_when_git_is_not_on_path(capsy
     assert "comment_intent_guard" in capsys.readouterr().err
 
 
+def test_finding_ending_before_the_added_lines_is_filtered_out():
+    assert guard._touches_added_lines((2, 3), {1}) is False
+
+
+def test_single_line_hunk_header_without_a_count_adds_exactly_one_line():
+    status_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    diff_result = subprocess.CompletedProcess(
+        args=[], returncode=0, stdout="+++ b/a.py\n@@ -0,0 +5 @@\n", stderr="",
+    )
+    with patch("subprocess.run", side_effect=[status_result, diff_result]):
+        added = guard._added_line_numbers("HEAD", "a.py")
+
+    assert added == {5}
+
+
 def test_cli_base_mode_on_an_untracked_file_treats_everything_as_added(tmp_path):
     _init_git_repo(tmp_path)
     (tmp_path / "placeholder.txt").write_text("x\n")
@@ -1977,6 +1992,21 @@ def test_cli_still_reports_a_bright_line_violation_when_analysis_is_unavailable(
         returncode = guard._cli_main(["--all", str(py_file)])
 
     assert "jira123" in capsys.readouterr().out
+    assert returncode == 4
+
+
+def test_cli_still_reports_later_files_after_one_is_unanalyzable(tmp_path, capsys):
+    first = tmp_path / "jira100_first.py"
+    first.write_text("VALUE = 1\n")
+    second = tmp_path / "jira200_second.py"
+    second.write_text("VALUE = 2\n")
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        returncode = guard._cli_main(["--all", str(first), str(second)])
+
+    out = capsys.readouterr().out
+    assert "jira100" in out
+    assert "jira200" in out
     assert returncode == 4
 
 
