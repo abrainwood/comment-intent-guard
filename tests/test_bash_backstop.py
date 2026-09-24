@@ -635,3 +635,32 @@ def test_added_line_starting_with_plus_plus_does_not_break_a_later_hunk(tmp_path
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "tracked.py" in context
     assert "date, measurement, or SHA" in context
+
+
+def test_candidate_missing_from_disk_warns_with_its_path(tmp_path, monkeypatch, capsys):
+    _init_git_repo(tmp_path)
+    target = _write(tmp_path, "pkg/gone.py", "pass\n")
+    subprocess.run(["git", "add", "pkg/gone.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add gone"], cwd=tmp_path, check=True)
+    with target.open("a") as handle:
+        handle.write("VALUE = 1\n")
+    _touch_future(target)
+    module = _import_bash_backstop()
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
+    module._run()  # baseline call establishes the mtime stamp
+
+    real_getmtime = module.os.path.getmtime
+
+    def _raise_for_gone(path):
+        if path.endswith("gone.py"):
+            raise OSError("simulated stat failure")
+        return real_getmtime(path)
+
+    monkeypatch.setattr(module.os.path, "getmtime", _raise_for_gone)
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
+
+    module._run()
+
+    assert "gone.py" in capsys.readouterr().err

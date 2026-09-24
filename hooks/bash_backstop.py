@@ -226,7 +226,8 @@ def _run():
     for candidate in candidates:
         try:
             mtime = os.path.getmtime(candidate)
-        except OSError:
+        except OSError as exc:
+            guard._warn(f"could not stat {candidate} ({type(exc).__name__}) - skipping", prefix="bash_backstop")
             continue
         # mtime resolution is one second on some filesystems; >= trades an
         # occasional duplicate report for never missing a same-second write.
