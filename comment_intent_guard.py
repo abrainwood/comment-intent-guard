@@ -1097,10 +1097,7 @@ def _decode_nul_separated(raw_bytes):
 
 
 def _scan_git_toplevel():
-    try:
-        result = _run_scan_git(["rev-parse", "--show-toplevel"], cwd=None)
-    except (OSError, subprocess.TimeoutExpired):
-        return None
+    result = _run_scan_git_checked(["rev-parse", "--show-toplevel"], cwd=None)
     if result.returncode != 0:
         return None
     return result.stdout.decode("utf-8", errors="surrogateescape").strip("\n")
@@ -1141,7 +1138,10 @@ def _drop_staged_but_deleted(relpaths):
 
 
 def _scan_main():
-    repo_root = _scan_git_toplevel()
+    try:
+        repo_root = _scan_git_toplevel()
+    except _ScanGitError:
+        return _EXIT_INTERNAL_ERROR
     if repo_root is None:
         print("comment-intent-guard scan: not inside a git repository", file=sys.stderr)
         return 2

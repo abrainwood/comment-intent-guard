@@ -36,7 +36,7 @@ def _write(path, relpath, content):
 
 def _write_hanging_fake_git(bin_dir):
     fake_git = bin_dir / "git"
-    fake_git.write_text("#!/bin/sh\nsleep 5\n")
+    fake_git.write_text("#!/bin/sh\nexec sleep 5\n")
     fake_git.chmod(0o755)
 
 
@@ -103,6 +103,23 @@ def test_scan_list_untracked_raises_when_git_exits_non_zero(tmp_path, monkeypatc
     assert "fake git failure" in capsys.readouterr().err
 
 
+def test_scan_git_toplevel_raises_on_git_timeout(tmp_path, monkeypatch, capsys):
+    _write_hanging_fake_git(tmp_path)
+    _prepend_to_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(guard._ScanGitError):
+        guard._scan_git_toplevel()
+
+    assert "timed out" in capsys.readouterr().err.lower()
+
+
+def test_scan_git_toplevel_returns_none_for_a_real_non_git_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    assert guard._scan_git_toplevel() is None
+
+
 def test_scan_head_sha_on_an_unborn_repo_returns_none_without_raising(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
 
@@ -118,12 +135,9 @@ def test_scan_main_returns_4_when_tracked_listing_raises_scan_git_error(tmp_path
         raise guard._ScanGitError
 
     monkeypatch.setattr(guard, "_scan_list_tracked", _raise)
+    monkeypatch.chdir(tmp_path)
 
-    original_cwd = os.getcwd()
-    try:
-        assert guard._scan_main() == 4
-    finally:
-        os.chdir(original_cwd)
+    assert guard._scan_main() == 4
 
 
 def test_scan_list_untracked_only_returns_pathspec_matching_files(tmp_path):
