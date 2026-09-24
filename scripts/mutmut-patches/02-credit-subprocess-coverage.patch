@@ -1,0 +1,39 @@
+--- a/mutmut/stats.py
++++ b/mutmut/stats.py
+@@ -1,4 +1,5 @@
+ from __future__ import annotations
++import os
+ 
+ import inspect
+ import json
+@@ -148,6 +149,13 @@
+ 
+ 
+ def record_trampoline_hit(name: str, caller: str | None = None) -> None:
++    import sys as _sys
++    if "_pytest" not in _sys.modules:
++        _hf = os.environ.get("MUTMUT_HITS_FILE")
++        if _hf:
++            with open(_hf, "a") as _f:
++                _f.write(name + "\n")
++        return
+     assert not name.startswith("src."), "Failed trampoline hit. Module name starts with `src.`, which is invalid"
+ 
+     mutated_source_paths = config().resolved_mutated_source_paths
+--- a/mutmut/runners/harness.py
++++ b/mutmut/runners/harness.py
+@@ -153,6 +153,14 @@
+             # noinspection PyMethodMayBeStatic
+             def pytest_runtest_teardown(self, item: Any, nextitem: Any) -> None:
+                 unused(nextitem)
++                import os as _os
++                _hf = _os.environ.get("MUTMUT_HITS_FILE")
++                if _hf and _os.path.exists(_hf):
++                    with open(_hf) as _f:
++                        for _l in _f:
++                            if _l.strip():
++                                state()._stats.add(_l.strip())
++                    _os.remove(_hf)
+                 for function in state()._stats:
+                     state().tests_by_mangled_function_name[function].add(strip_prefix(item._nodeid, prefix="mutants/"))
+                 state()._stats.clear()

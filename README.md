@@ -117,6 +117,32 @@ Git 2.31 or newer for the pre-commit hook's native-hook path resolution
 (`git rev-parse --path-format=absolute`). See issue #19 for older-git
 fallback status.
 
+## Mutation testing
+
+A mutant is a small automatic edit to the production code, such as flipping
+`<` to `<=` or dropping an argument. The suite kills a mutant when some test
+fails, and a surviving mutant is a code change no test notices.
+
+```sh
+scripts/mutate.sh                               # fast lane, a few minutes
+scripts/mutate.sh 'hooks.session_start.*'       # one module
+scripts/mutate.sh --with-subprocess-coverage    # full audit, about an hour
+```
+
+The script builds `.venv-mutate` with a pinned mutmut, applies the patches in
+`scripts/mutmut-patches/`, runs, and prints the surviving mutants. The first
+patch maps mutants to modules by file path, so hooks loaded under another name
+or run as `__main__` still pick up their mutants. The second patch credits
+tests that reach the code through a spawned process; it only switches on with
+`--with-subprocess-coverage`. Neither fix is in mutmut 3.8.0 or upstream main.
+
+The fast lane leaves out the shell tests (`test_bin_scan.py`, `test_init.py`),
+the public-surface introspection test (it sees mutmut's generated names), and
+the 51-session eviction test (slow). Score is detected / total mutants, where
+detected is killed plus timed out. The gap between the fast lane and the full
+audit is code verified only through subprocesses. Findings and the baseline
+scores are in issue #31.
+
 ## Releases
 
 Tags are `comment-intent-guard--vX.Y.Z`. `gate.yml` pins a specific tag via
