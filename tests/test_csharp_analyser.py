@@ -479,6 +479,14 @@ def test_verbatim_string_trailing_backslash_does_not_escape_the_closing_quote():
     assert spans == [("line", 0, 0, " real")]
 
 
+def test_verbatim_string_doubled_quote_followed_by_a_backslash_stays_in_the_string():
+    text = 'var s = @"""\\"; // fixed on 2026-01-05\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " fixed on 2026-01-05")]
+
+
 def test_slash_star_inside_a_verbatim_string_is_not_a_block_comment():
     text = 'var s = @"a /* not a comment */ still string"; // real\n'
 
