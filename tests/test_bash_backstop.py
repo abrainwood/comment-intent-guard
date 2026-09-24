@@ -2,12 +2,14 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 import pytest
+from conftest import git_repo_template_dir
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_PATH = _REPO_ROOT / "hooks" / "bash_backstop.py"
@@ -20,7 +22,7 @@ def _import_bash_backstop():
     return module
 
 
-def _run(payload, env):
+def _run_subprocess(payload, env):
     return subprocess.run(
         [sys.executable, str(_SCRIPT_PATH)],
         input=json.dumps(payload),
@@ -31,11 +33,28 @@ def _run(payload, env):
     )
 
 
+def _run(payload, env):
+    module = _import_bash_backstop()
+    stdin_backup, stdout_backup, stderr_backup = sys.stdin, sys.stdout, sys.stderr
+    state_value = env.get("COMMENT_INTENT_GUARD_STATE")
+    env_backup = os.environ.get("COMMENT_INTENT_GUARD_STATE")
+    out, err = io.StringIO(), io.StringIO()
+    sys.stdin, sys.stdout, sys.stderr = io.StringIO(json.dumps(payload)), out, err
+    if state_value is not None:
+        os.environ["COMMENT_INTENT_GUARD_STATE"] = state_value
+    try:
+        module.main()
+    finally:
+        sys.stdin, sys.stdout, sys.stderr = stdin_backup, stdout_backup, stderr_backup
+        if env_backup is None:
+            os.environ.pop("COMMENT_INTENT_GUARD_STATE", None)
+        else:
+            os.environ["COMMENT_INTENT_GUARD_STATE"] = env_backup
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=out.getvalue(), stderr=err.getvalue())
+
+
 def _init_git_repo(path):
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
-    subprocess.run(["git", "commit", "--allow-empty", "-q", "-m", "init"], cwd=path, check=True)
+    shutil.copytree(git_repo_template_dir(), path, dirs_exist_ok=True)
 
 
 def _write(path, relpath, content):
@@ -49,7 +68,7 @@ def test_non_git_cwd_produces_no_output(tmp_path):
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state.json"))
 
-    result = _run(payload, env)
+    result = _run_subprocess(payload, env)
 
     assert result.returncode == 0
     assert result.stdout == ""
@@ -59,13 +78,13 @@ def test_heredoc_written_test_docstring_is_reported_as_a_bright_line(tmp_path):
     _init_git_repo(tmp_path)
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    baseline = _run(payload, env)
+    baseline = _run_subprocess(payload, env)
     assert baseline.stdout == ""
 
     target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
     _touch_future(target)
 
-    result = _run(payload, env)
+    result = _run_subprocess(payload, env)
 
     assert result.returncode == 0
     output = json.loads(result.stdout)
@@ -259,6 +278,14 @@ def test_non_ascii_filename_is_reported_as_a_bright_line(tmp_path):
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
 
 
+def test_parse_diff_added_lines_single_line_hunk_header_without_a_count_adds_exactly_one_line():
+    module = _import_bash_backstop()
+
+    result = module._parse_diff_added_lines("+++ b/a.py\n@@ -0,0 +5 @@\n", {"a.py"})
+
+    assert result == {"a.py": {5}}
+
+
 def test_unquote_git_header_path_handles_mixed_raw_and_octal_escapes_from_quote_path_false(tmp_path):
     module = _import_bash_backstop()
 
@@ -384,27 +411,6 @@ def test_violating_line_appended_to_a_tracked_file_reports_the_new_finding_witho
     assert context.count("date, measurement, or SHA") == 1
     assert "2026-09-24" not in context
     assert "near line 3" in context
-
-
-def test_51_sessions_evicts_the_oldest(tmp_path, monkeypatch, capsys):
-    _init_git_repo(tmp_path)
-    module = _import_bash_backstop()
-    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
-    monkeypatch.setattr(module, "_repo_root", lambda cwd: str(tmp_path))
-    monkeypatch.setattr(module, "_candidate_files", lambda repo_root: ([], {}))
-
-    session_count = module.guard.MAX_TRACKED_SESSIONS + 1
-    for n in range(session_count):
-        payload = {"session_id": f"session-{n}", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-        monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
-        module._run()
-        assert capsys.readouterr().out == ""
-
-    stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
-    stamps = json.loads(stamps_path.read_text())
-    assert "session-0" not in stamps
-    assert f"session-{session_count - 1}" in stamps
-    assert len(stamps) == module.guard.MAX_TRACKED_SESSIONS
 
 
 def test_partial_write_to_the_stamps_file_is_rewritten_as_valid_json_on_the_next_run(tmp_path):
