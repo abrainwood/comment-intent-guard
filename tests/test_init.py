@@ -92,6 +92,28 @@ def test_native_git_hooks_pre_commit_is_refused_and_nothing_is_written(tmp_path)
     assert not (tmp_path / ".comment-intent-guard.json").exists()
 
 
+def test_native_hook_check_sees_a_linked_worktrees_shared_hooks_dir(tmp_path):
+    main_repo = tmp_path / "main"
+    subprocess.run(["git", "init", "-q", str(main_repo)], check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "--allow-empty", "-q", "-m", "init"],
+        cwd=main_repo,
+        check=True,
+    )
+    native_hook = main_repo / ".git" / "hooks" / "pre-commit"
+    native_hook.write_text("#!/bin/sh\necho native\n")
+    worktree = tmp_path / "worktree"
+    subprocess.run(
+        ["git", "worktree", "add", "-q", str(worktree), "-b", "wt-branch"], cwd=main_repo, check=True
+    )
+
+    result = subprocess.run(["bash", str(_INIT_SH)], cwd=worktree, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert str(native_hook) in result.stderr
+    assert not (worktree / ".comment-intent-guard.json").exists()
+
+
 def test_differing_workflow_yml_is_refused_before_any_write(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     workflow = tmp_path / ".github" / "workflows" / "comment-guard.yml"

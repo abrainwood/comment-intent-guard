@@ -44,7 +44,7 @@ if [ -n "$existing_hooks_path" ] && [ "$existing_hooks_path" != ".githooks" ]; t
   refuse "refusing to change core.hooksPath - it already points at $existing_hooks_path"
 fi
 
-native_hook="$(git -C "$REPO_ROOT" rev-parse --absolute-git-dir)/hooks/pre-commit"
+native_hook="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-commit"
 if [ -e "$native_hook" ]; then
   refuse "refusing to install - a native pre-commit hook already exists at $native_hook"
 fi
