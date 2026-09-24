@@ -275,6 +275,36 @@ def test_scan_reports_a_tracked_violation_in_a_filename_with_a_space(tmp_path):
     assert "bad file.py" in result.stdout + result.stderr
 
 
+def test_scan_reports_a_filename_containing_a_newline_once_and_exits_3(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    (tmp_path / "bad\nname.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    combined = result.stdout + result.stderr
+    assert "could not read" not in combined
+    assert combined.count("a docstring") == 1
+
+
+def test_scan_on_an_unborn_repo_skips_a_staged_file_deleted_from_the_worktree(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    staged = tmp_path / "bad.py"
+    staged.write_text('def test_x():\n    """a docstring"""\n')
+    subprocess.run(["git", "add", "bad.py"], cwd=tmp_path, check=True)
+    staged.unlink()
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert "nothing uncommitted" in result.stdout
+    assert "could not read" not in result.stdout + result.stderr
+
+
 def test_scan_ignores_a_txt_file(tmp_path):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
@@ -287,27 +317,24 @@ def test_scan_ignores_a_txt_file(tmp_path):
     assert "notes.txt" not in result.stdout + result.stderr
 
 
-def test_scan_pathspec_excludes_txt_files_from_the_guard_invocation(tmp_path):
+def test_scan_delegates_listing_entirely_to_the_python_scan_mode(tmp_path):
+    # The shell wrapper does no git listing of its own for scan - it is a
+    # thin dispatcher to `comment_intent_guard.py --scan`.
     plugin_root = tmp_path / "plugin"
     (plugin_root / "bin").mkdir(parents=True)
     wrapper_copy = plugin_root / "bin" / "comment-intent-guard"
     wrapper_copy.write_bytes(_BIN_WRAPPER.read_bytes())
     wrapper_copy.chmod(0o755)
     (plugin_root / "comment_intent_guard.py").write_text(
-        "import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit(1)\n"
+        "import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit(0)\n"
     )
 
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_repo_with_a_commit(repo)
-    (repo / "checked.py").write_text("x\n")
-    (repo / "notes.txt").write_text("x\n")
 
     result = subprocess.run(
         ["sh", str(wrapper_copy), "scan"], cwd=repo, capture_output=True, text=True
     )
 
-    passed_args = [
-        a for a in result.stdout.split("ARGV:", 1)[1].split() if a not in ("--all", "--")
-    ]
-    assert set(passed_args) == {"checked.py"}
+    assert result.stdout.strip() == "ARGV:--scan"

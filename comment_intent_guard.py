@@ -1002,19 +1002,12 @@ _EXIT_BRIGHT_LINE = 3
 _EXIT_INTERNAL_ERROR = 4
 
 
-def _cli_main(argv):
-    parser = argparse.ArgumentParser(prog="comment_intent_guard")
-    mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--base")
-    mode.add_argument("--all", action="store_true")
-    parser.add_argument("files", nargs="+")
-    args = parser.parse_args(argv)
-
+def _check_files(files, base=None):
     try:
         any_error = False
         any_blocking = False
         any_advisory = False
-        for file_path in args.files:
+        for file_path in files:
             try:
                 with open(file_path, encoding="utf-8") as handle:
                     text = handle.read()
@@ -1033,8 +1026,8 @@ def _cli_main(argv):
                 any_error = True
                 continue
 
-            if args.base:
-                added = _added_line_numbers(args.base, file_path)
+            if base:
+                added = _added_line_numbers(base, file_path)
                 if added is not None:
                     advisory = _restrict_to_added_lines(advisory, added)
 
@@ -1055,6 +1048,106 @@ def _cli_main(argv):
     if any_advisory:
         return _EXIT_ADVISORY
     return _EXIT_CLEAN
+
+
+def _cli_main(argv):
+    parser = argparse.ArgumentParser(prog="comment_intent_guard")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--base")
+    mode.add_argument("--all", action="store_true")
+    parser.add_argument("files", nargs="+")
+    args = parser.parse_args(argv)
+
+    return _check_files(args.files, base=args.base)
+
+
+_SCAN_PATHSPECS = ("*.py", "*.yaml", "*.yml", "*.jinja", "*.j2")
+_SCAN_GIT_TIMEOUT_SECONDS = 5
+
+
+def _run_scan_git(args, cwd):
+    return subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, timeout=_SCAN_GIT_TIMEOUT_SECONDS,
+    )
+
+
+def _decode_nul_separated(raw_bytes):
+    return [
+        entry.decode("utf-8", errors="surrogateescape")
+        for entry in raw_bytes.split(b"\0")
+        if entry
+    ]
+
+
+def _scan_git_toplevel():
+    try:
+        result = _run_scan_git(["rev-parse", "--show-toplevel"], cwd=None)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.decode("utf-8", errors="surrogateescape").strip("\n")
+
+
+def _scan_head_sha(repo_root):
+    result = _run_scan_git(["rev-parse", "-q", "--verify", "HEAD"], cwd=repo_root)
+    if result.returncode != 0:
+        return None
+    return result.stdout.decode("utf-8", errors="surrogateescape").strip()
+
+
+def _scan_list_tracked(repo_root, head_sha):
+    if head_sha:
+        args = ["diff", "--name-only", "-z", "--diff-filter=d", "HEAD", "--", *_SCAN_PATHSPECS]
+    else:
+        args = ["diff", "--cached", "--name-only", "-z", "--diff-filter=d", "--", *_SCAN_PATHSPECS]
+    result = _run_scan_git(args, cwd=repo_root)
+    if result.returncode != 0:
+        _warn(f"git {' '.join(args)} failed (exit {result.returncode}) - treating as no tracked changes")
+        return []
+    return _decode_nul_separated(result.stdout)
+
+
+def _scan_list_untracked(repo_root):
+    args = ["ls-files", "--others", "--exclude-standard", "-z", "--", *_SCAN_PATHSPECS]
+    result = _run_scan_git(args, cwd=repo_root)
+    if result.returncode != 0:
+        _warn(f"git {' '.join(args)} failed (exit {result.returncode}) - treating as no untracked files")
+        return []
+    return _decode_nul_separated(result.stdout)
+
+
+def _scan_present_on_disk(repo_root, relpaths):
+    # A file staged then removed from the worktree is still listed by git's
+    # index-based comparison, so drop entries missing from the worktree.
+    return [rp for rp in relpaths if os.path.lexists(os.path.join(repo_root, rp))]
+
+
+def _scan_main():
+    try:
+        repo_root = _scan_git_toplevel()
+    except OSError as exc:
+        _warn(f"could not run git ({type(exc).__name__})")
+        repo_root = None
+    if repo_root is None:
+        print("comment-intent-guard scan: not inside a git repository", file=sys.stderr)
+        return 2
+
+    head_sha = _scan_head_sha(repo_root)
+    tracked = _scan_present_on_disk(repo_root, _scan_list_tracked(repo_root, head_sha))
+    untracked = _scan_present_on_disk(repo_root, _scan_list_untracked(repo_root))
+
+    if not tracked and not untracked:
+        print("nothing uncommitted to scan")
+        return 0
+
+    overall = 0
+    if tracked:
+        base = "HEAD" if head_sha else None
+        overall = max(overall, _check_files([os.path.join(repo_root, rp) for rp in tracked], base=base))
+    if untracked:
+        overall = max(overall, _check_files([os.path.join(repo_root, rp) for rp in untracked]))
+    return overall
 
 
 def _hook_main():
@@ -1123,6 +1216,8 @@ def _hook_main():
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "--scan":
+        sys.exit(_scan_main())
     if len(sys.argv) > 1:
         sys.exit(_cli_main(sys.argv[1:]))
     _hook_main()
