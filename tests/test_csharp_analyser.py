@@ -368,6 +368,52 @@ def test_doc_comment_on_a_non_test_method_is_not_a_blocking_violation():
     assert violations == []
 
 
+def test_doc_comment_before_an_mstest_test_method_attribute_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[TestMethod]\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("no caller" in message for message, _ in violations)
+
+
+def test_doc_comment_on_a_different_member_than_the_test_attribute_is_not_blocked():
+    text = (
+        "/// <summary>The widget config.</summary>\n"
+        "public Config Configuration { get; set; }\n"
+        "\n"
+        "[Fact]\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_doc_comment_not_adjacent_to_the_test_method_is_not_blocked():
+    text = (
+        "/// <summary>Old note.</summary>\n"
+        "public int Count;\n"
+        "\n"
+        "[Fact]\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
 def test_double_slash_inside_a_string_literal_is_not_a_comment():
     text = 'var s = "http://example.com";\n'
 

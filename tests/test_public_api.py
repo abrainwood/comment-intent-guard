@@ -129,10 +129,39 @@ def _blocking_violations_sample():
     )
 
 
+def _csharp_blocking_violations_sample():
+    return guard.find_csharp_blocking_violations(
+        "/// <summary>Checks the thing.</summary>\n[Fact]\npublic void ChecksTheThing()\n{\n}\n",
+        "/repo/Tests/ThingTests.cs",
+    )
+
+
+def _csharp_findings_sample():
+    return guard.find_csharp_findings("int x = 1; // fixed on 2026-01-05\n")
+
+
+def _csharp_issue_reference_violations_sample():
+    return guard.find_csharp_issue_reference_violations("int x = 1; // see #123 for context\n")
+
+
 @pytest.mark.parametrize(
     "build_findings",
-    [_misplaced_rationale_sample, _yaml_findings_sample, _blocking_violations_sample],
-    ids=["find_misplaced_rationale", "find_yaml_findings", "find_blocking_violations"],
+    [
+        _misplaced_rationale_sample,
+        _yaml_findings_sample,
+        _blocking_violations_sample,
+        _csharp_findings_sample,
+        _csharp_issue_reference_violations_sample,
+        _csharp_blocking_violations_sample,
+    ],
+    ids=[
+        "find_misplaced_rationale",
+        "find_yaml_findings",
+        "find_blocking_violations",
+        "find_csharp_findings",
+        "find_csharp_issue_reference_violations",
+        "find_csharp_blocking_violations",
+    ],
 )
 def test_finding_producing_function_returns_well_shaped_findings(build_findings):
     findings = build_findings()
