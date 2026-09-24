@@ -545,3 +545,27 @@ def test_diff_failure_other_than_missing_head_is_warned(tmp_path, monkeypatch, c
 
     assert result == {}
     assert "index file corrupt" in capsys.readouterr().err
+
+
+def test_missing_session_id_still_tracks_a_baseline_stamp(tmp_path):
+    _init_git_repo(tmp_path)
+    payload = {"cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    _touch_future(target)
+    first = _run(payload, env)
+    assert first.returncode == 0
+    assert "test_x" in json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    # Fast-forward every stamp past the touched-future mtime, deterministically
+    # simulating time passing rather than racing the real clock.
+    stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
+    stamps = json.loads(stamps_path.read_text())
+    future_mtime = int(os.path.getmtime(target))
+    stamps_path.write_text(json.dumps({key: future_mtime + 1 for key in stamps}))
+
+    third = _run(payload, env)
+
+    assert third.stdout == ""

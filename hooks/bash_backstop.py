@@ -14,6 +14,7 @@ _MAX_CANDIDATES = 200
 _GIT_TIMEOUT_SECONDS = 5
 _MAX_FINDINGS = 40
 _MAX_MESSAGE_BYTES = 4096
+_ANONYMOUS_SESSION_KEY = "__no_session_id__"
 
 
 def _stamps_path():
@@ -189,17 +190,17 @@ def _run():
         )
         return
 
-    session_key = session_id if isinstance(session_id, str) else None
+    session_key = session_id if isinstance(session_id, str) else _ANONYMOUS_SESSION_KEY
     stamps_path = _stamps_path()
     stamps = guard._load_state(stamps_path)
 
-    if session_key is not None and session_key not in stamps:
+    if session_key not in stamps:
         # First call for a session establishes the mtime baseline; the backstop
         # covers writes made during this session, not the repo's pre-existing state.
         _save_stamps(stamps_path, session_key, now, stamps)
         return
 
-    last_run = _last_run(stamps, session_key) if session_key else 0
+    last_run = _last_run(stamps, session_key)
     fresh = []
     for candidate in candidates:
         try:
@@ -230,8 +231,7 @@ def _run():
             advisory = guard._restrict_to_added_lines(advisory, added)
         lines.extend(_findings_message(file_path, blocking, advisory))
 
-    if session_key is not None:
-        _save_stamps(stamps_path, session_key, now, stamps)
+    _save_stamps(stamps_path, session_key, now, stamps)
 
     if not lines:
         return
