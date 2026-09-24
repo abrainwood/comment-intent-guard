@@ -1,0 +1,38 @@
+--- a/mutmut/mutation/trampoline.py
++++ b/mutmut/mutation/trampoline.py
+@@ -31,6 +31,17 @@
+ _mutant_under_test: str | None = None
+ 
+ 
++def _mm_runtime_module(func):
++    fn = func.__code__.co_filename.replace("\\", "/")
++    marker = "/mutants/"
++    if marker in fn:
++        rel = fn.split(marker, 1)[1]
++        if rel.endswith(".py"):
++            rel = rel[:-3]
++        return rel.replace("/", ".")
++    return func.__module__
++
++
+ def set_mutant_under_test(name: str | None) -> None:
+     """Record the active mutant in process-local state.
+ 
+@@ -90,7 +101,7 @@
+                 )
+ 
+             if mutant_under_test == "stats":
+-                orig_qual_name = f"{orig_func.__module__}.{mangled_name_from_mutant_name(orig_func.__name__)}"
++                orig_qual_name = f"{_mm_runtime_module(orig_func)}.{mangled_name_from_mutant_name(orig_func.__name__)}"
+                 caller_name, depth = MutmutCallStack.get()
+                 max_depth = int(os.environ.get("MUTMUT_DEPENDENCY_DEPTH", "-1"))
+                 if max_depth == -1 or depth < max_depth:
+@@ -106,7 +117,7 @@
+             # mutant under test is {module}.{mutant_name}
+             module, _, mutant_name = mutant_under_test.rpartition(".")
+ 
+-            if module != decorated_func.__module__:
++            if module != _mm_runtime_module(decorated_func):
+                 # mutant of another module is active -> call original function
+                 return orig_func(*call_args, **kwargs)
+ 
