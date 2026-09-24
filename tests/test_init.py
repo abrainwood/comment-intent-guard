@@ -482,6 +482,31 @@ def test_pre_commit_allows_a_clean_staged_python_file(tmp_path):
     assert result.returncode == 0
 
 
+def test_pre_commit_prints_advisory_findings_and_still_allows_the_commit(tmp_path):
+    pre_commit = _init_repo_and_get_pre_commit(tmp_path)
+    advisory_only = tmp_path / "config.yaml"
+    advisory_only.write_text(
+        "# first reason for this shape\n"
+        "# second reason for this shape\n"
+        "# third reason for this shape\n"
+        "# fourth reason for this shape\n"
+        "# fifth reason for this shape\n"
+        "key: value\n"
+    )
+    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["bash", str(pre_commit)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=_guard_env(),
+    )
+
+    assert result.returncode == 0
+    assert "config.yaml" in result.stdout + result.stderr
+
+
 def test_pre_commit_passes_with_a_warning_when_no_discovery_arm_resolves(tmp_path):
     pre_commit = _init_repo_and_get_pre_commit(tmp_path)
     violating = tmp_path / "bad.py"
