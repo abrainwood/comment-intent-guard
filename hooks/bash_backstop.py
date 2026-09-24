@@ -161,6 +161,10 @@ def main():
         print(f"bash_backstop: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
+def _seed_session_baseline(stamps_path, session_key, stamp, all_stamps):
+    stamps_module.save_stamps(stamps_path, session_key, stamp, all_stamps)
+
+
 def _run():
     payload = json.load(sys.stdin)
     cwd = payload.get("cwd")
@@ -172,9 +176,7 @@ def _run():
     if repo_root is None:
         return
 
-    # Captured before listing/scanning so the stamp we persist can never be
-    # later than the mtimes it is meant to bound - see the >= comparison below.
-    now = int(time.time())
+    scan_started_at = int(time.time())
 
     candidates, added_by_relpath = _candidate_files(repo_root)
     if len(candidates) > _MAX_CANDIDATES:
@@ -189,9 +191,7 @@ def _run():
     all_stamps = stamps_module.load_stamps(stamps_path)
 
     if session_key not in all_stamps:
-        # First call for a session establishes the mtime baseline; the backstop
-        # covers writes made during this session, not the repo's pre-existing state.
-        stamps_module.save_stamps(stamps_path, session_key, now, all_stamps)
+        _seed_session_baseline(stamps_path, session_key, scan_started_at, all_stamps)
         return
 
     last_run = stamps_module.last_run(all_stamps, session_key)
@@ -202,8 +202,7 @@ def _run():
         except OSError as exc:
             guard._warn(f"could not stat {candidate} ({type(exc).__name__}) - skipping", prefix="bash_backstop")
             continue
-        # mtime resolution is one second on some filesystems; >= trades an
-        # occasional duplicate report for never missing a same-second write.
+        # FAT/HFS+ mtimes are whole seconds
         if int(mtime) >= last_run:
             fresh.append(candidate)
 
@@ -226,7 +225,7 @@ def _run():
             advisory = guard._restrict_to_added_lines(advisory, added)
         lines.extend(_findings_message(file_path, blocking, advisory))
 
-    stamps_module.save_stamps(stamps_path, session_key, now, all_stamps)
+    stamps_module.save_stamps(stamps_path, session_key, scan_started_at, all_stamps)
 
     if not lines:
         return
