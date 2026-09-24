@@ -40,5 +40,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-      - run: pip install pytest==8.3.4
+      - run: pip install pytest==8.3.4 pyyaml==6.0.2
       - run: pytest -q
+
+  comment-guard-gate:
+    uses: ./.github/workflows/gate.yml
+    # gate.yml's default guard-ref names a tag that doesn't exist yet -
+    # pin the dogfood run to this checkout's own commit instead.
+    with:
+      guard-ref: ${{ github.sha }}
