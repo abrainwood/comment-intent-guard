@@ -93,9 +93,7 @@ def test_native_git_hooks_pre_commit_is_refused_and_nothing_is_written(tmp_path)
     assert not (tmp_path / ".comment-intent-guard.json").exists()
 
 
-def _write_old_git_shim(bin_dir):
-    # git 2.26 echoes an unrecognized --path-format=absolute as a garbage
-    # output line rather than erroring, exit 0.
+def _write_git_2_26_rev_parse_shim(bin_dir):
     real_git = shutil.which("git")
     shim = bin_dir / "git"
     shim.write_text(
@@ -116,7 +114,7 @@ def _write_old_git_shim(bin_dir):
 def test_native_hook_check_works_when_git_garbles_the_unrecognized_path_format_flag(tmp_path):
     bin_dir = tmp_path / "oldgitbin"
     bin_dir.mkdir()
-    _write_old_git_shim(bin_dir)
+    _write_git_2_26_rev_parse_shim(bin_dir)
     repo = tmp_path / "repo"
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     native_hook = repo / ".git" / "hooks" / "pre-commit"
@@ -297,7 +295,20 @@ def test_a_pre_1_1_workflow_carrying_the_copy_line_upgrades_instead_of_being_lef
 
     assert result.returncode == 0
     assert "left alone" not in result.stdout
+    assert ".github/workflows/comment-guard.yml updated" in result.stdout
     assert workflow.read_text() == _workflow_effective_content()
+
+
+def test_workflow_containing_only_the_copy_line_does_not_crash_the_upgrade_check(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    workflow = tmp_path / ".github" / "workflows" / "comment-guard.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text(_WORKFLOW_COPY_INSTRUCTIONS + "\n")
+
+    result = subprocess.run(["bash", str(_INIT_SH)], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode == 0
+    assert "comment-guard.yml" in result.stdout
 
 
 def test_claude_md_marker_already_present_is_not_duplicated(tmp_path):

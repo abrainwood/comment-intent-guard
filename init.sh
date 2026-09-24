@@ -22,11 +22,14 @@ CLAUDE_MD="$REPO_ROOT/CLAUDE.md"
 WORKFLOW_COPY_INSTRUCTIONS="# Copy into .github/workflows/ to enforce the guard on every PR."
 
 strip_template_instructions() {
-  grep -vFx "$WORKFLOW_COPY_INSTRUCTIONS" "$1"
+  grep -vFx "$WORKFLOW_COPY_INSTRUCTIONS" "$1" || [ "$?" -eq 1 ]
 }
 
+TMP_FILES=()
+trap 'rm -f "${TMP_FILES[@]:-}"' EXIT
+
 WORKFLOW_EFFECTIVE="$(mktemp)"
-trap 'rm -f "$WORKFLOW_EFFECTIVE"' EXIT
+TMP_FILES+=("$WORKFLOW_EFFECTIVE")
 strip_template_instructions "$SCRIPT_DIR/templates/comment-guard.yml" > "$WORKFLOW_EFFECTIVE"
 
 refuse() {
@@ -79,14 +82,13 @@ sync_target() {
   if [ -n "$upgrade_fn" ]; then
     local stripped
     stripped="$(mktemp)"
+    TMP_FILES+=("$stripped")
     "$upgrade_fn" "$dest" > "$stripped"
     if cmp -s "$stripped" "$src"; then
       cp "$src" "$dest"
-      rm -f "$stripped"
       write_report_line "$dest" "updated (dropped stale template instructions)"
       return 0
     fi
-    rm -f "$stripped"
   fi
   local allow_force="$forceable" force_denied_reason=""
   if [ -n "$force_guard_fn" ] && ! "$force_guard_fn" "$dest"; then
