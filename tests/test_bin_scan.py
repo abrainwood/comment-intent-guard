@@ -115,3 +115,15 @@ def test_scan_pathspec_is_not_shell_glob_expanded_against_the_repo_root(tmp_path
 
     assert result.returncode == 3
     assert "bad.py" in result.stdout + result.stderr
+
+
+def test_scan_handles_a_non_ascii_untracked_filename(tmp_path):
+    _init_repo_with_a_commit(tmp_path)
+    (tmp_path / "café.py").write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "café.py" in result.stdout + result.stderr
