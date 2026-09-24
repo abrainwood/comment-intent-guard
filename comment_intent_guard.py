@@ -906,11 +906,13 @@ def _csharp_skip_raw_interpolated_string(text, quote_index, quote_run, dollar_ru
     return i
 
 
-def _csharp_skip_interpolation_hole(text, start):
+def _csharp_skip_interpolation_hole(text, start, verbatim):
     i = start + 1
     n = len(text)
     depth = 1
     while i < n:
+        if not verbatim and text[i] == "\n":
+            return i
         literal_end = _csharp_try_skip_literal(text, i)
         if literal_end is not None:
             i = literal_end
@@ -939,7 +941,7 @@ def _csharp_skip_interpolated_string(text, quote_index, verbatim):
             i += 2
             continue
         if ch == "{":
-            i = _csharp_skip_interpolation_hole(text, i)
+            i = _csharp_skip_interpolation_hole(text, i, verbatim)
             continue
         if not verbatim and ch == "\\" and i + 1 < n:
             i += 2

@@ -605,3 +605,11 @@ def test_dollar_dollar_raw_interpolated_string_single_line_has_no_findings():
 
     assert blocking == []
     assert findings == []
+
+
+def test_unterminated_interpolation_hole_does_not_swallow_later_comments():
+    text = 'var s = $"{x;\n// real #1\nint y; // real #2\n'
+
+    blocking, findings = guard._scan_csharp_comments(text)
+
+    assert len(blocking) == 2
