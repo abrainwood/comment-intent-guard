@@ -80,10 +80,15 @@ def _touch_future(path, seconds=5):
     os.utime(path, (future, future))
 
 
-def test_git_repo_with_no_changes_produces_no_output(tmp_path):
+def test_second_call_on_a_clean_repo_produces_no_output(tmp_path):
     _init_git_repo(tmp_path)
+    untracked = _write(tmp_path, "pkg/untracked.py", '"""fixes #91"""\nVALUE = 1\n')
+    old = time.time() - 100
+    os.utime(untracked, (old, old))
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    baseline = _run(payload, env)
+    assert baseline.stdout == ""
 
     result = _run(payload, env)
 
@@ -127,6 +132,25 @@ def test_mtime_equal_to_the_stamp_is_reported(tmp_path):
     assert result.returncode == 0
     output = json.loads(result.stdout)
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_backstop_does_not_re_report_an_unchanged_file_on_the_next_call(tmp_path):
+    _init_git_repo(tmp_path)
+    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    pass\n')
+    seed_stamp = 1_700_000_000
+    state_path = _seed_stamp(tmp_path, "session-a", seed_stamp)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=state_path)
+    edit_stamp = seed_stamp + 10
+    target.write_text('def test_x():\n    """doc"""\n')
+    os.utime(target, (edit_stamp, edit_stamp))
+
+    second = _run(payload, env)
+    assert "test_x" in json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
+
+    third = _run(payload, env)
+
+    assert third.stdout == ""
 
 
 def test_a_different_session_id_is_reported_again(tmp_path):
@@ -538,6 +562,32 @@ def test_git_call_count_stays_constant_regardless_of_candidate_count(tmp_path, m
     assert call_count == 4
 
 
+def test_backstop_reports_blocking_findings_from_an_unanalyzable_file(tmp_path, monkeypatch):
+    _init_git_repo(tmp_path)
+    target = _write(tmp_path, "pkg/tracked.py", "pass\n")
+    module = _import_bash_backstop()
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
+    module._run()  # seeds the session baseline stamp
+    _touch_future(target)
+
+    def _raise_unavailable(file_path, text):
+        exc = module.guard.AnalysisUnavailable("could not analyze")
+        exc.blocking = [("BLOCKED - unanalyzable file", (1, 1))]
+        raise exc
+
+    monkeypatch.setattr(module.guard, "_findings_for_file", _raise_unavailable)
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
+    stdout = io.StringIO()
+    monkeypatch.setattr(module.sys, "stdout", stdout)
+
+    module._run()
+
+    output = json.loads(stdout.getvalue())
+    assert "BRIGHT LINE - BLOCKED - unanalyzable file" in output["hookSpecificOutput"]["additionalContext"]
+
+
 def test_diff_against_missing_head_stays_silent(tmp_path, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     module = _import_bash_backstop()
@@ -546,6 +596,21 @@ def test_diff_against_missing_head_stays_silent(tmp_path, capsys):
 
     assert result == {}
     assert capsys.readouterr().err == ""
+
+
+def test_git_paths_failure_other_than_missing_head_is_warned(tmp_path, monkeypatch, capsys):
+    _init_git_repo(tmp_path)
+    module = _import_bash_backstop()
+
+    def _fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(args, returncode=1, stdout="", stderr="fatal: index file corrupt")
+
+    monkeypatch.setattr(module.subprocess, "run", _fake_run)
+
+    result = module._git_paths(str(tmp_path), ["diff", "--name-only", "HEAD"])
+
+    assert result == []
+    assert "index file corrupt" in capsys.readouterr().err
 
 
 def test_diff_failure_other_than_missing_head_is_warned(tmp_path, monkeypatch, capsys):
