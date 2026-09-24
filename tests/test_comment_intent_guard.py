@@ -1614,6 +1614,12 @@ def test_yaml_escaped_double_quote_does_not_prematurely_close_the_string():
     assert findings == []
 
 
+def test_hash_after_an_escaped_quote_inside_a_double_quoted_value_is_not_a_comment():
+    line = 'k: "a\\" # b"  # c'
+
+    assert guard._yaml_comment_start(line) == 14
+
+
 def test_yaml_apostrophe_in_a_plain_scalar_does_not_suppress_a_trailing_comment():
     text = "name: the neighbour's house  # fixed on 2026-05-22\n"
 
