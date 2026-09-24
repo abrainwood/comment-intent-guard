@@ -342,7 +342,7 @@ def test_c_unquote_body_stops_an_octal_escape_at_three_digits():
     assert module._c_unquote_body("\\1234") == bytes([0o123]) + b"4"
 
 
-def test_is_no_head_yet_is_false_for_exit_128_with_an_unrelated_git_error(tmp_path):
+def test_is_no_head_yet_is_false_for_exit_128_with_an_unrelated_git_error():
     module = _import_bash_backstop()
     result = subprocess.CompletedProcess(
         args=["git"], returncode=128,
@@ -352,7 +352,7 @@ def test_is_no_head_yet_is_false_for_exit_128_with_an_unrelated_git_error(tmp_pa
     assert module._is_no_head_yet(result) is False
 
 
-def test_is_no_head_yet_is_true_for_exit_128_with_an_unborn_head_error(tmp_path):
+def test_is_no_head_yet_is_true_for_exit_128_with_an_unborn_head_error():
     module = _import_bash_backstop()
     result = subprocess.CompletedProcess(
         args=["git"], returncode=128,
@@ -507,18 +507,38 @@ def test_build_message_byte_cap_reports_the_exact_omitted_count():
 
 def test_build_message_byte_cap_with_several_lines_already_kept_reports_the_exact_omitted_count():
     module = _import_bash_backstop()
-    line = "x" * 1350
+    header = module._build_message([])
+    budget = module._MAX_MESSAGE_BYTES - len(header.encode("utf-8"))
+    # smallest length where a 4th line would overflow the budget, with 3 already fitting
+    line_length = (budget - 6) // 4 + 1
+    line = "x" * line_length
     lines = [line] * 6
 
     message = module._build_message(lines)
 
-    assert message.count(line) == 3
-    assert message.endswith("... and 3 more findings")
+    assert message == header + "\n\n".join([line] * 3) + "\n\n... and 3 more findings"
+
+
+def test_build_message_omitted_count_combines_the_finding_cap_and_the_byte_cap():
+    module = _import_bash_backstop()
+    header = module._build_message([])
+    budget = module._MAX_MESSAGE_BYTES - len(header.encode("utf-8"))
+    kept_count = 5
+    # largest length where kept_count lines fit the budget with separators between them
+    line_length = (budget - 2 * (kept_count - 1)) // kept_count
+    line = "x" * line_length
+    over_the_cap = module._MAX_FINDINGS + 5
+    lines = [line] * over_the_cap
+
+    message = module._build_message(lines)
+
+    assert message.count(line) == kept_count
+    assert message.endswith(f"... and {over_the_cap - kept_count} more findings")
 
 
 def test_build_message_keeps_a_line_that_exactly_fills_the_remaining_budget():
     module = _import_bash_backstop()
-    header = "COMMENT INTENT CHECK (Bash backstop):\n\n"
+    header = module._build_message([])
     budget = module._MAX_MESSAGE_BYTES - len(header.encode("utf-8"))
     line = "x" * budget
 
@@ -874,31 +894,7 @@ def test_heredoc_written_jinja_with_an_issue_reference_is_reported_as_a_bright_l
     assert "thing.jinja" in context
 
 
-def test_an_unreadable_file_does_not_stop_a_later_file_from_being_reported(git_repo, run_backstop, capsys):
-    unreadable = _write(git_repo, "pkg/blocked.py", "VALUE = 1\n")
-    readable = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
-    state_path = str(git_repo / "state" / "state.json")
-    assert run_backstop(payload, state_path) == ""
-
-    _touch_ahead(unreadable)
-    _touch_ahead(readable)
-    unreadable.chmod(0o000)
-    try:
-        result = run_backstop(payload, state_path)
-    finally:
-        unreadable.chmod(0o644)
-
-    output = json.loads(result)
-    assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
-    stderr = capsys.readouterr().err
-    assert "could not read" in stderr
-    assert "blocked.py" in stderr
-
-
-def test_a_file_that_disappears_before_stat_does_not_stop_a_later_file_from_being_reported(
-    git_repo, monkeypatch, capsys,
-):
+def test_an_unreadable_file_does_not_stop_a_later_file_from_being_reported(git_repo, monkeypatch, capsys):
     module = _import_bash_backstop()
     state_path = str(git_repo / "state" / "state.json")
 
@@ -914,20 +910,49 @@ def test_a_file_that_disappears_before_stat_does_not_stop_a_later_file_from_bein
     payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
     assert _call(payload) == ""
 
+    unreadable = _write(git_repo, "pkg/blocked.py", "VALUE = 1\n")
+    readable = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    _touch_ahead(unreadable)
+    _touch_ahead(readable)
+    real_open = open
+
+    def _flaky_open(path, *args, **kwargs):
+        if path == str(unreadable):
+            raise OSError("Permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(module, "open", _flaky_open, raising=False)
+
+    result = _call(payload)
+
+    output = json.loads(result)
+    assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
+    stderr = capsys.readouterr().err
+    assert "could not read" in stderr
+    assert "blocked.py" in stderr
+
+
+def test_a_file_that_disappears_before_stat_does_not_stop_a_later_file_from_being_reported(
+    git_repo, run_backstop, monkeypatch, capsys,
+):
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
+
     vanished = _write(git_repo, "pkg/vanished.py", "VALUE = 1\n")
     readable = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
     _touch_ahead(vanished)
     _touch_ahead(readable)
-    real_getmtime = module.os.path.getmtime
+    real_getmtime = os.path.getmtime
 
     def _flaky_getmtime(path):
         if path == str(vanished):
             raise OSError("No such file or directory")
         return real_getmtime(path)
 
-    monkeypatch.setattr(module.os.path, "getmtime", _flaky_getmtime)
+    monkeypatch.setattr(os.path, "getmtime", _flaky_getmtime)
 
-    result = _call(payload)
+    result = run_backstop(payload, state_path)
 
     output = json.loads(result)
     assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
