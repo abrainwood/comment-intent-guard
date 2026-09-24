@@ -917,6 +917,24 @@ def test_oversize_comment_run_is_flagged():
     assert any("comment" in f.lower() for f, _ in findings)
 
 
+def test_oversize_comment_run_finding_span_is_exact():
+    text = "\n".join(f"# reason line {i}" for i in range(5)) + "\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    _, span = next(f for f in findings if "Comment run" in f[0])
+    assert span == (1, 5)
+
+
+def test_trailing_comment_with_a_sha_finding_span_is_its_own_line():
+    text = "x = 1\nMAX_GAP = 4  # per review of 56305c8ab\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    _, span = next(f for f in findings if "sha" in f[0].lower())
+    assert span == (2, 2)
+
+
 def test_rename_phrasing_only_appears_for_comment_runs_not_docstrings():
     comment_text = "\n".join(f"# reason line {i}" for i in range(5)) + "\n"
     docstring_lines = "\n".join(f"reason {i}" for i in range(13))
@@ -992,6 +1010,15 @@ def test_docstring_on_a_test_function_is_a_blocking_violation():
     source = 'def test_thing():\n    """Checks the thing."""\n    assert True\n'
 
     assert guard.find_blocking_violations(source, "/repo/tests/test_thing.py")
+
+
+def test_docstring_on_a_test_function_violation_row_is_where_the_docstring_opens():
+    source = 'def test_thing():\n    """Checks the thing."""\n    assert True\n'
+
+    violations = guard.find_blocking_violations(source, "/repo/tests/test_thing.py")
+
+    _, span = next(v for v in violations if "opens with a docstring" in v[0])
+    assert span == (2, 2)
 
 
 def test_e2e_test_docstring_denies_the_edit():
@@ -1376,6 +1403,22 @@ def test_yaml_long_commented_out_config_run_gets_the_dead_config_message():
 
     assert any("dead config" in f.lower() for f, _ in findings)
     assert not any("design doc" in f for f, _ in findings)
+
+
+def test_yaml_dead_config_finding_span_is_exact():
+    text = (
+        "# sensor:\n"
+        "#   - platform: template\n"
+        "#     sensors:\n"
+        "#       old_pool_temp:\n"
+        '#         value_template: "{{ states(\'sensor.pool_raw\') }}"\n'
+        "key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    _, span = next(f for f in findings if "dead config" in f[0].lower())
+    assert span == (1, 5)
 
 
 def test_yaml_dead_config_message_does_not_claim_the_lines_are_consecutive():
