@@ -138,6 +138,22 @@ def test_findings_for_file_routes_cs_files_to_the_csharp_analyser():
     assert any("date, measurement, or SHA" in message for message, _ in advisory)
 
 
+def test_findings_for_file_tokenizes_a_cs_file_at_most_once(monkeypatch):
+    text = "int x = 1; // fixed on 2026-01-05\n/// <summary>doc</summary>\n[Fact]\nvoid T() {}\n"
+    calls = []
+    real_spans = guard._csharp_comment_spans
+
+    def counting_spans(t):
+        calls.append(t)
+        return real_spans(t)
+
+    monkeypatch.setattr(guard, "_csharp_comment_spans", counting_spans)
+
+    guard._findings_for_file("/repo/src/Thing.cs", text)
+
+    assert len(calls) == 1
+
+
 def _run_hook(payload):
     return subprocess.run(
         [sys.executable, str(_MODULE_PATH)],
@@ -226,6 +242,30 @@ def test_double_slash_inside_a_string_literal_is_not_a_comment():
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == []
+
+
+def test_unterminated_regular_string_does_not_swallow_the_next_real_comment():
+    text = 'var s = "oops\n// fixed on 2026-01-05\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 1, 1, " fixed on 2026-01-05")]
+
+
+def test_adjacent_quotes_in_a_regular_string_are_not_doubling_escaped():
+    text = 'var s = "" // fixed on 2026-01-05\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " fixed on 2026-01-05")]
+
+
+def test_regular_string_escapes_a_quote_with_backslash_not_doubling():
+    text = 'var s = "a\\"" // fixed on 2026-01-05\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " fixed on 2026-01-05")]
 
 
 def test_line_comment_yields_a_line_span_with_its_text():

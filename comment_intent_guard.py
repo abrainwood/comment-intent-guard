@@ -559,6 +559,14 @@ def find_blocking_violations(text, file_path):
 def _csharp_comment_spans(text):
     spans = []
     i, n = 0, len(text)
+    line, counted_up_to = 0, 0
+
+    def line_at(pos):
+        nonlocal line, counted_up_to
+        line += text.count("\n", counted_up_to, pos)
+        counted_up_to = pos
+        return line
+
     while i < n:
         ch = text[i]
         if ch == "@" and i + 1 < n and text[i + 1] == '"':
@@ -582,7 +590,7 @@ def _csharp_comment_spans(text):
         if ch == "/" and i + 1 < n and text[i + 1] == "/":
             is_doc = i + 2 < n and text[i + 2] == "/"
             marker_len = 3 if is_doc else 2
-            li = text.count("\n", 0, i)
+            li = line_at(i)
             eol = text.find("\n", i)
             eol = n if eol == -1 else eol
             kind = "doc" if is_doc else "line"
@@ -595,7 +603,7 @@ def _csharp_comment_spans(text):
             i = eol
             continue
         if ch == "/" and i + 1 < n and text[i + 1] == "*":
-            start_li = text.count("\n", 0, i)
+            start_li = line_at(i)
             close = text.find("*/", i + 2)
             end = n if close == -1 else close
             end_li = start_li + text.count("\n", i, end)
@@ -607,14 +615,17 @@ def _csharp_comment_spans(text):
 
 
 def _scan_csharp_comments(text):
-    lines = _split_rows(text)
+    return _scan_csharp_comment_spans(_csharp_comment_spans(text), _split_rows(text))
+
+
+def _scan_csharp_comment_spans(spans, lines):
     findings = []
     blocking = []
     run_start = None
     run_end = None
     run_lines = []
 
-    for kind, start_li, end_li, content in _csharp_comment_spans(text):
+    for kind, start_li, end_li, content in spans:
         if kind == "line" and lines[start_li][:lines[start_li].find("//")].strip() == "":
             if run_start is not None and start_li == run_end + 1:
                 run_end = end_li
@@ -675,10 +686,9 @@ def _csharp_test_method_after_doc_block(lines, end_li):
     return (match.group(1), li + 1) if match else None
 
 
-def _csharp_test_doc_blocking_violations(text):
-    lines = _split_rows(text)
+def _csharp_test_doc_blocking_violations(spans, lines):
     violations = []
-    for kind, _start_li, end_li, _content in _csharp_comment_spans(text):
+    for kind, _start_li, end_li, _content in spans:
         if kind != "doc":
             continue
         found = _csharp_test_method_after_doc_block(lines, end_li)
@@ -688,9 +698,9 @@ def _csharp_test_doc_blocking_violations(text):
     return violations
 
 
-def _csharp_external_id_blocking_violations(text, allowed_prefixes):
+def _csharp_external_id_blocking_violations(spans, allowed_prefixes):
     violations = []
-    for kind, start_li, end_li, content in _csharp_comment_spans(text):
+    for kind, start_li, end_li, content in spans:
         if kind != "doc":
             continue
         violations.extend(
@@ -700,12 +710,16 @@ def _csharp_external_id_blocking_violations(text, allowed_prefixes):
     return violations
 
 
+def _csharp_blocking_violations(spans, lines, allowed_prefixes):
+    return (
+        _csharp_test_doc_blocking_violations(spans, lines)
+        + _csharp_external_id_blocking_violations(spans, allowed_prefixes)
+    )
+
+
 def find_csharp_blocking_violations(text, file_path):
     allowed_prefixes = _repo_id_prefix_allowlist(file_path)
-    return (
-        _csharp_test_doc_blocking_violations(text)
-        + _csharp_external_id_blocking_violations(text, allowed_prefixes)
-    )
+    return _csharp_blocking_violations(_csharp_comment_spans(text), _split_rows(text), allowed_prefixes)
 
 
 def find_csharp_findings(text):
@@ -783,7 +797,7 @@ def _csharp_skip_verbatim_string(text, quote_index):
 def _csharp_skip_string(text, start):
     i = start + 1
     n = len(text)
-    while i < n:
+    while i < n and text[i] != "\n":
         if text[i] == "\\" and i + 1 < n:
             i += 2
             continue
@@ -1182,8 +1196,12 @@ def _findings_for_file(file_path, text):
     if file_path.endswith((".jinja", ".j2")):
         return find_jinja_issue_reference_violations(text), find_jinja_findings(text)
     if file_path.endswith(".cs"):
-        blocking = find_csharp_blocking_violations(text, file_path) + find_csharp_issue_reference_violations(text)
-        return blocking, find_csharp_findings(text)
+        spans = _csharp_comment_spans(text)
+        lines = _split_rows(text)
+        allowed_prefixes = _repo_id_prefix_allowlist(file_path)
+        issue_blocking, findings = _scan_csharp_comment_spans(spans, lines)
+        blocking = _csharp_blocking_violations(spans, lines, allowed_prefixes) + issue_blocking
+        return blocking, findings
     return [], []
 
 
@@ -1442,12 +1460,7 @@ def _hook_main():
 
             findings = [message for message, _ in find_jinja_findings(text)]
         elif is_csharp:
-            violations = [message for message, _ in find_csharp_blocking_violations(text, file_path)]
-            if violations:
-                print(json.dumps(_deny_payload(violations)))
-                return
-
-            issue_blocking, advisory_pairs = _scan_csharp_comments(text)
+            issue_blocking, advisory_pairs = _findings_for_file(file_path, text)
             violations = [message for message, _ in issue_blocking]
             if violations:
                 print(json.dumps(_deny_payload(violations)))
