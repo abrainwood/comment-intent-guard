@@ -28,7 +28,7 @@ case "$subcommand" in
       echo "usage: comment-intent-guard check <--base REF|--all> FILE..." >&2
       exit 2
     fi
-    exec python3 "$ROOT_DIR/comment_intent_guard.py" "$@"
+    COMMENT_INTENT_GUARD_PROG="comment-intent-guard check" exec python3 "$ROOT_DIR/comment_intent_guard.py" "$@"
     ;;
   scan)
     exec python3 "$ROOT_DIR/comment_intent_guard.py" --scan "$@"
