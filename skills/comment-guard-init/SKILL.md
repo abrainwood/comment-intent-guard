@@ -1,6 +1,6 @@
 ---
 name: comment-guard-init
-description: Wire the comment-intent guard into the current repo (pre-commit hook, CI gate, config, CLAUDE.md stanza). Use when the user asks to set up, install, or init the comment-intent guard in this repo, or invokes /comment-guard-init.
+description: Wire the comment-intent guard into the current repo (pre-commit hook, CI gate, config, CLAUDE.md stanza). Use when the user asks to set up, install, or init the comment-intent guard in this repo, or invokes /comment-intent-guard:comment-guard-init.
 ---
 
 Run `comment-intent-guard init` from the repository root.
