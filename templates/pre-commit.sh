@@ -76,11 +76,19 @@ if [ "${#staged[@]}" -eq 0 ]; then
   exit 0
 fi
 
+config_files=()
+while IFS= read -r -d '' file; do
+  config_files+=("$file")
+done < <(git ls-files -z -- ':(glob)**/.comment-intent-guard.json')
+
 check_staged_index_content() {
   local snapshot_dir
   snapshot_dir="$(mktemp -d)"
   trap 'rm -rf "$snapshot_dir"' RETURN
   git checkout-index --prefix="${snapshot_dir}/" -- "${staged[@]}"
+  if [ "${#config_files[@]}" -gt 0 ]; then
+    git checkout-index --prefix="${snapshot_dir}/" -- "${config_files[@]}"
+  fi
   (cd "$snapshot_dir" && python3 "$guard_script" --all "${staged[@]}")
 }
 

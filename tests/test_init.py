@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -470,6 +471,25 @@ def test_pre_commit_blocks_a_staged_violation_even_when_the_worktree_copy_was_la
 
     assert result.returncode != 0
     assert "sneaky.py" in result.stdout + result.stderr
+
+
+def test_pre_commit_honors_a_staged_id_prefix_allowlist_for_a_filename_id_token(tmp_path):
+    pre_commit = _init_repo_and_get_pre_commit(tmp_path)
+    config = tmp_path / ".comment-intent-guard.json"
+    config.write_text(json.dumps({"id_prefix_allowlist": ["abc"]}))
+    allowed = tmp_path / "abc12.py"
+    allowed.write_text("def add(a, b):\n    return a + b\n")
+    subprocess.run(["git", "add", ".comment-intent-guard.json", "abc12.py"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["bash", str(pre_commit)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=_guard_env(),
+    )
+
+    assert result.returncode == 0
 
 
 def test_pre_commit_allows_a_staged_clean_file_even_when_the_worktree_copy_was_later_broken(tmp_path):
