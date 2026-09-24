@@ -5,12 +5,12 @@ description: On-demand scan of everything uncommitted in the current repo (track
 
 Run `comment-intent-guard scan` from the repository root.
 
-It exits 0 on a clean tree, printing only "nothing uncommitted to scan" and
-nothing else; 1 with advisory findings printed; 3 if any bright line is
-violated; 4 if some files could not be read, still printing any BLOCKED
-lines found among the files that were readable; and 2 if the current
-directory isn't inside a git repository - report that message rather than
-retrying elsewhere.
+It exits 0 when nothing is found (prints "nothing uncommitted to scan" only
+if there was nothing to check); 1 with advisory findings printed; 3 if any
+bright line is violated; 4 if some files could not be read, still printing
+any BLOCKED lines found among the files that were readable; and 2 if the
+current directory isn't inside a git repository - report that message
+rather than retrying elsewhere.
 
 A bright line is any printed line prefixed "BLOCKED"; every other printed
 finding is advisory.

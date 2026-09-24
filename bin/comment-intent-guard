@@ -23,11 +23,11 @@ _SCAN_PATHSPEC="*.py *.yaml *.yml *.jinja *.j2"
 _NEWLINE_ONLY_IFS="
 "
 
-with_globbing_off() {
+disable_globbing() {
   set -f
 }
 
-with_globbing_on() {
+enable_globbing() {
   set +f
 }
 
@@ -35,16 +35,15 @@ split_nul_list_into_args() {
   tr '\0' '\n' < "$1"
 }
 
-# Sets $code to the guard's exit status.
-run_guard_over() {
+run_guard_setting_code() {
   list_file="$1"
   shift
   save_ifs="$IFS"
   IFS="$_NEWLINE_ONLY_IFS"
-  with_globbing_off
+  disable_globbing
   # shellcheck disable=SC2046
   set -- "$@" -- $(split_nul_list_into_args "$list_file")
-  with_globbing_on
+  enable_globbing
   IFS="$save_ifs"
   set +e
   python3 "$ROOT_DIR/comment_intent_guard.py" "$@"
@@ -65,7 +64,7 @@ cmd_scan() {
 
   head_sha="$(git rev-parse -q --verify HEAD || true)"
 
-  with_globbing_off
+  disable_globbing
   if [ -n "$head_sha" ]; then
     # shellcheck disable=SC2086
     git diff --name-only -z --diff-filter=d HEAD -- $_SCAN_PATHSPEC > "$tracked_file"
@@ -75,7 +74,7 @@ cmd_scan() {
   fi
   # shellcheck disable=SC2086
   git ls-files --others --exclude-standard -z -- $_SCAN_PATHSPEC > "$untracked_file"
-  with_globbing_on
+  enable_globbing
 
   if [ ! -s "$tracked_file" ] && [ ! -s "$untracked_file" ]; then
     echo "nothing uncommitted to scan"
@@ -86,9 +85,9 @@ cmd_scan() {
 
   if [ -s "$tracked_file" ]; then
     if [ -n "$head_sha" ]; then
-      run_guard_over "$tracked_file" --base HEAD
+      run_guard_setting_code "$tracked_file" --base HEAD
     else
-      run_guard_over "$tracked_file" --all
+      run_guard_setting_code "$tracked_file" --all
     fi
     if [ "$code" -gt "$overall" ]; then
       overall="$code"
@@ -96,7 +95,7 @@ cmd_scan() {
   fi
 
   if [ -s "$untracked_file" ]; then
-    run_guard_over "$untracked_file" --all
+    run_guard_setting_code "$untracked_file" --all
     if [ "$code" -gt "$overall" ]; then
       overall="$code"
     fi

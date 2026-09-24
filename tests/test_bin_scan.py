@@ -160,6 +160,19 @@ def test_scan_on_an_unborn_empty_repo_exits_0_with_nothing_uncommitted(tmp_path)
     assert "nothing uncommitted" in result.stdout
 
 
+def test_scan_on_an_unborn_repo_reports_a_staged_violation_and_exits_3(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
+    subprocess.run(["git", "add", "bad.py"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "scan"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 3
+    assert "bad.py" in result.stdout + result.stderr
+
+
 def test_scan_reports_an_untracked_violation_in_a_dash_leading_filename(tmp_path):
     _init_repo_with_a_commit(tmp_path)
     (tmp_path / "-x.py").write_text('def test_x():\n    """a docstring"""\n')
