@@ -15,9 +15,6 @@ and C#.
 | Jinja | `.jinja`, `.j2` | not applicable - Jinja has no test functions |
 | C# | `.cs` | a `///` XML doc block immediately preceding a method carrying `[Fact]`, `[Theory]`, `[Test]`, `[TestCase]`, or `[TestMethod]` - a test method under another framework's attribute is not recognized |
 
-C# ships in the next tagged release (v1.1.0). The v1.0.0 CI gate and existing
-v1.0.0 installs do not check `.cs` files.
-
 All four get the evidence-marker (date/measurement/SHA), issue-reference, and
 comment-run checks. External-id checks cover Python docstrings, test names,
 and filenames, and C# `///` blocks - not YAML or Jinja. The oversize check
@@ -74,7 +71,7 @@ To pin the plugin for a whole team, commit `.claude/settings.json` with:
 
   jobs:
     comment-guard:
-      uses: abrainwood/comment-intent-guard/.github/workflows/gate.yml@comment-intent-guard--v1.0.0
+      uses: abrainwood/comment-intent-guard/.github/workflows/gate.yml@comment-intent-guard--v1.1.0
   ```
 
 ## Skills
@@ -190,7 +187,7 @@ scores are in issue #31.
 ## Releases
 
 Tags are `comment-intent-guard--vX.Y.Z`. `gate.yml` pins a specific tag via
-its `guard-ref` input (default `comment-intent-guard--v1.0.0`). To pick up a
+its `guard-ref` input (default `comment-intent-guard--v1.1.0`). To pick up a
 new release in an installed plugin, run
 `claude plugin update comment-intent-guard@comment-intent-guard` and restart
 Claude Code.

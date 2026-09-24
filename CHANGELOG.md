@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-25
+
 ### Added
 
 - C# support for the comment-intent guard, including `///` XML doc comments
@@ -36,20 +38,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tests) and PR #34 (Close audit #31 gaps in the hooks tests and cut their
   runtime), both against issue #31 (Test audit 2026-09-24: mutation
   survivors and suite gaps).
+- `init.sh` now validates its arguments (`--help`/`-h` prints usage and
+  exits 0, an unknown flag prints usage to stderr and exits 2) and all
+  three `hooks/hooks.json` commands quote `${CLAUDE_PLUGIN_ROOT}` - PR #40
+  (init arg validation and quoted hook paths), closing issue #37
+  (hooks.json: quote ${CLAUDE_PLUGIN_ROOT} in all three hook commands) and
+  issue #38 (init: unknown arguments are ignored and init runs anyway).
+- Closed the remaining audit-2 mutation survivors in the hooks
+  (`bash_backstop.py`, `session_start.py`, `stamps.py`) - PR #41 (Audit 2:
+  hooks survivors (#31)), part of issue #31.
+- Closed the remaining audit-2 mutation survivors in the guard module and
+  its C# support - PR #42 (Audit 2: guard and C# survivors (#31)), part of
+  issue #31.
 
 ### Known follow-ups (not yet done)
 
-- Issue #31 (Test audit 2026-09-24: mutation survivors and suite gaps) -
-  parent tracking issue; PRs #33/#34 above close part of it, remainder
-  still open.
-- Issue #35 (C#: doc block between [Fact] and a second attribute reports
-  the attribute name, not the method).
-- Issue #37 (hooks.json: quote ${CLAUDE_PLUGIN_ROOT} in all three hook
-  commands).
-- Issue #38 (init: unknown arguments (e.g. --help) are ignored and init
-  runs anyway).
 - Issue #29 (scan --base HEAD: batch the per-file _added_line_numbers git
   calls).
+- Issue #35 (C#: doc block between [Fact] and a second attribute reports
+  the attribute name, not the method).
+- Issue #39 (Test suite speed and hygiene follow-ups from audit 2).
 
 ## [1.0.0] - 2026-09-24 - Initial plugin release
 
