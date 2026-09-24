@@ -5,7 +5,6 @@ import os
 import shutil
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -78,28 +77,22 @@ def test_non_git_cwd_produces_no_output(tmp_path):
     assert result.stdout == ""
 
 
-def test_heredoc_written_test_docstring_is_reported_as_a_bright_line(git_repo):
+def test_heredoc_written_test_docstring_is_reported_as_a_bright_line(git_repo, run_backstop):
     payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(git_repo / "state" / "state.json"))
-    baseline = _run_subprocess(payload, env)
-    assert baseline.stdout == ""
+    state_path = str(git_repo / "state" / "state.json")
+    baseline = run_backstop(payload, state_path)
+    assert baseline == ""
 
     target = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    _touch_future(target)
+    _touch_ahead(target)
 
-    result = _run_subprocess(payload, env)
+    result = run_backstop(payload, state_path)
 
-    assert result.returncode == 0
-    output = json.loads(result.stdout)
+    output = json.loads(result)
     hook_output = output["hookSpecificOutput"]
     assert hook_output["hookEventName"] == "PostToolUse"
     assert "bright line" in hook_output["additionalContext"].lower()
     assert "test_x" in hook_output["additionalContext"]
-
-
-def _touch_future(path, seconds=5):
-    future = time.time() + seconds
-    os.utime(path, (future, future))
 
 
 def _touch_ahead(path, seconds=5, clock=_FIXED_CLOCK):
@@ -349,6 +342,45 @@ def test_c_unquote_body_stops_an_octal_escape_at_three_digits():
     assert module._c_unquote_body("\\1234") == bytes([0o123]) + b"4"
 
 
+def test_is_no_head_yet_is_false_for_exit_128_with_an_unrelated_git_error():
+    module = _import_bash_backstop()
+    result = subprocess.CompletedProcess(
+        args=["git"], returncode=128,
+        stdout="", stderr="fatal: detected dubious ownership in repository at '/repo'\n",
+    )
+
+    assert module._is_no_head_yet(result) is False
+
+
+def test_is_no_head_yet_is_true_for_exit_128_with_an_unborn_head_error():
+    module = _import_bash_backstop()
+    result = subprocess.CompletedProcess(
+        args=["git"], returncode=128,
+        stdout="", stderr="fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.\n",
+    )
+
+    assert module._is_no_head_yet(result) is True
+
+
+def test_git_paths_warns_on_stderr_for_a_non_no_head_exit_128(tmp_path, monkeypatch, capsys):
+    module = _import_bash_backstop()
+
+    def _fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0], returncode=128,
+            stdout="", stderr="fatal: detected dubious ownership in repository at '/repo'\n",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", _fake_run)
+
+    result = module._git_paths(str(tmp_path), ["ls-files", "--others", "--exclude-standard"])
+
+    assert result == []
+    err = capsys.readouterr().err
+    assert "bash_backstop:" in err
+    assert "dubious ownership" in err
+
+
 def test_repo_root_lookup_timeout_is_caught_and_warned(tmp_path, monkeypatch, capsys):
     module = _import_bash_backstop()
 
@@ -471,6 +503,49 @@ def test_build_message_byte_cap_reports_the_exact_omitted_count():
     message = module._build_message(lines)
 
     assert message.endswith("... and 1 more findings")
+
+
+def test_build_message_byte_cap_with_several_lines_already_kept_reports_the_exact_omitted_count():
+    module = _import_bash_backstop()
+    header = module._build_message([])
+    budget = module._MAX_MESSAGE_BYTES - len(header.encode("utf-8"))
+    # smallest length where a 4th line would overflow the budget, with 3 already fitting
+    line_length = (budget - 6) // 4 + 1
+    line = "x" * line_length
+    lines = [line] * 6
+
+    message = module._build_message(lines)
+
+    assert message == header + "\n\n".join([line] * 3) + "\n\n... and 3 more findings"
+
+
+def test_build_message_omitted_count_combines_the_finding_cap_and_the_byte_cap():
+    module = _import_bash_backstop()
+    header = module._build_message([])
+    budget = module._MAX_MESSAGE_BYTES - len(header.encode("utf-8"))
+    kept_count = 5
+    # largest length where kept_count lines fit the budget with separators between them
+    line_length = (budget - 2 * (kept_count - 1)) // kept_count
+    line = "x" * line_length
+    over_the_cap = module._MAX_FINDINGS + 5
+    lines = [line] * over_the_cap
+
+    message = module._build_message(lines)
+
+    assert message.count(line) == kept_count
+    assert message.endswith(f"... and {over_the_cap - kept_count} more findings")
+
+
+def test_build_message_keeps_a_line_that_exactly_fills_the_remaining_budget():
+    module = _import_bash_backstop()
+    header = module._build_message([])
+    budget = module._MAX_MESSAGE_BYTES - len(header.encode("utf-8"))
+    line = "x" * budget
+
+    message = module._build_message([line])
+
+    assert message == header + line
+    assert "more findings" not in message
 
 
 def test_build_message_caps_by_byte_budget_even_under_40_findings():
@@ -817,6 +892,73 @@ def test_heredoc_written_jinja_with_an_issue_reference_is_reported_as_a_bright_l
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "BRIGHT LINE" in context
     assert "thing.jinja" in context
+
+
+def test_an_unreadable_file_does_not_stop_a_later_file_from_being_reported(git_repo, monkeypatch, capsys):
+    module = _import_bash_backstop()
+    state_path = str(git_repo / "state" / "state.json")
+
+    def _call(payload):
+        monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
+        stdout = io.StringIO()
+        monkeypatch.setattr(module.sys, "stdout", stdout)
+        monkeypatch.setattr(module.time, "time", lambda: _FIXED_CLOCK)
+        monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", state_path)
+        module._run()
+        return stdout.getvalue()
+
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    assert _call(payload) == ""
+
+    unreadable = _write(git_repo, "pkg/blocked.py", "VALUE = 1\n")
+    readable = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    _touch_ahead(unreadable)
+    _touch_ahead(readable)
+    real_open = open
+
+    def _flaky_open(path, *args, **kwargs):
+        if path == str(unreadable):
+            raise OSError("Permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(module, "open", _flaky_open, raising=False)
+
+    result = _call(payload)
+
+    output = json.loads(result)
+    assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
+    stderr = capsys.readouterr().err
+    assert "could not read" in stderr
+    assert "blocked.py" in stderr
+
+
+def test_a_file_that_disappears_before_stat_does_not_stop_a_later_file_from_being_reported(
+    git_repo, run_backstop, monkeypatch, capsys,
+):
+    payload = {"session_id": "session-a", "cwd": str(git_repo), "tool_name": "Bash", "tool_input": {}}
+    state_path = str(git_repo / "state" / "state.json")
+    assert run_backstop(payload, state_path) == ""
+
+    vanished = _write(git_repo, "pkg/vanished.py", "VALUE = 1\n")
+    readable = _write(git_repo, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    _touch_ahead(vanished)
+    _touch_ahead(readable)
+    real_getmtime = os.path.getmtime
+
+    def _flaky_getmtime(path):
+        if path == str(vanished):
+            raise OSError("No such file or directory")
+        return real_getmtime(path)
+
+    monkeypatch.setattr(os.path, "getmtime", _flaky_getmtime)
+
+    result = run_backstop(payload, state_path)
+
+    output = json.loads(result)
+    assert "test_x" in output["hookSpecificOutput"]["additionalContext"]
+    stderr = capsys.readouterr().err
+    assert "could not stat" in stderr
+    assert "vanished.py" in stderr
 
 
 def test_second_call_over_the_cap_skips_before_any_per_file_read_or_stat(tmp_path, monkeypatch, capsys):
