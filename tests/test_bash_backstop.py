@@ -408,6 +408,18 @@ def test_build_message_with_exactly_40_findings_has_no_more_findings_note():
     assert "more findings" not in message
 
 
+def test_build_message_byte_cap_reports_the_exact_omitted_count():
+    module = _import_bash_backstop()
+    finding_byte_size = 500
+    finding_count = 45
+    lines = ["x" * finding_byte_size for _ in range(finding_count)]
+
+    message = module._build_message(lines)
+
+    kept = message.count("x" * finding_byte_size)
+    assert message.endswith(f"... and {finding_count - kept} more findings")
+
+
 def test_build_message_caps_by_byte_budget_even_under_40_findings():
     module = _import_bash_backstop()
     finding_byte_size = 500

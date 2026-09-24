@@ -12,6 +12,20 @@ def _import_stamps():
     return module
 
 
+def test_restamping_the_oldest_session_protects_it_from_eviction(tmp_path):
+    module = _import_stamps()
+    path = str(tmp_path / "bash_backstop_stamps.json")
+    stamps = {}
+    for n in range(module.guard.MAX_TRACKED_SESSIONS):
+        module.save_stamps(path, f"session-{n}", n, stamps)
+
+    module.save_stamps(path, "session-0", 1_000, stamps)
+    module.save_stamps(path, "session-extra", 1_001, stamps)
+
+    assert "session-0" in stamps
+    assert "session-1" not in stamps
+
+
 def test_load_stamps_warns_with_the_bash_backstop_prefix_on_a_corrupt_file(tmp_path, capsys):
     module = _import_stamps()
     corrupt = tmp_path / "bash_backstop_stamps.json"
