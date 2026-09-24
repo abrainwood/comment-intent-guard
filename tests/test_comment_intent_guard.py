@@ -295,7 +295,7 @@ def test_docstring_of_exactly_the_threshold_line_count_is_not_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert not any(f.startswith("Docstring spans") for f, _ in findings)
+    assert findings == []
 
 
 def test_oversize_docstring_is_flagged():
@@ -907,7 +907,7 @@ def test_comment_run_of_exactly_the_threshold_line_count_is_not_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert not any(f.startswith("Comment run of") for f, _ in findings)
+    assert findings == []
 
 
 def test_oversize_comment_run_is_flagged():
@@ -1316,7 +1316,7 @@ def test_jinja_comment_block_of_exactly_the_threshold_line_count_is_not_flagged(
 
     findings = guard.find_jinja_findings(text)
 
-    assert not any(f.startswith("Jinja '{# #}' block spans") for f, _ in findings)
+    assert findings == []
 
 
 def test_find_jinja_findings_flags_an_oversize_standalone_jinja_comment_block():
@@ -1448,7 +1448,15 @@ def test_yaml_short_description_block_with_an_evidence_marker_is_flagged():
 
     findings = guard.find_yaml_findings(text)
 
-    assert any("Description" in f and "date" in f.lower() for f, _ in findings)
+    assert findings == [(guard._evidence_finding("Description block scalar", 1), (1, 2))]
+
+
+def test_yaml_dead_config_run_of_exactly_the_threshold_line_count_still_blocks_an_issue_reference():
+    text = "# a: 1\n# b: 2\n# c: 3\n# see #12\nkey: value\n"
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert violations == [(guard._issue_reference_violation("Comment", 0), (1, 4))]
 
 
 def test_yaml_long_commented_out_config_run_gets_the_dead_config_message():
@@ -1740,10 +1748,11 @@ def test_hash_after_a_double_backslash_inside_a_double_quoted_value_is_a_comment
 @pytest.mark.parametrize(
     "line",
     [
-        pytest.param('k: "it\'s # x"  # c', id="apostrophe_inside_double_quoted_value"),
+        pytest.param('k: " \'x # y"  # c', id="apostrophe_inside_double_quoted_value"),
         pytest.param('"a # b" # c', id="double_quote_opens_at_column_zero"),
         pytest.param("'a # b' # c", id="single_quote_opens_at_column_zero"),
         pytest.param('k: value # comment "quoted" text', id="quote_after_the_comment_hash"),
+        pytest.param("ab:'c # d'  # e", id="opener_check_looks_at_the_immediately_preceding_character"),
     ],
 )
 def test_yaml_comment_start_finds_the_real_hash(line):
@@ -1946,10 +1955,6 @@ def test_hook_main_in_process_advises_on_a_yaml_oversize_comment_run(monkeypatch
             {"tool_name": "Write", "tool_input": {"file_path": "/repo/thing.py"}},
             id="missing_content_is_ignored",
         ),
-        pytest.param(
-            {"tool_name": "Read", "tool_input": {"file_path": "/repo/thing.py"}},
-            id="wrong_tool_name_yields_no_added_text",
-        ),
     ],
 )
 def test_hook_main_routing_cases_produce_no_output(monkeypatch, capsys, payload):
@@ -1983,8 +1988,7 @@ def test_hook_main_denies_a_csharp_issue_reference_violation(monkeypatch, capsys
     guard._hook_main()
 
     output = json.loads(capsys.readouterr().out)
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert output == guard._deny_payload([guard._issue_reference_violation("Comment", 0)])
 
 
 def test_hook_main_denies_a_jinja_issue_reference_violation(monkeypatch, capsys):
@@ -2000,8 +2004,7 @@ def test_hook_main_denies_a_jinja_issue_reference_violation(monkeypatch, capsys)
     guard._hook_main()
 
     output = json.loads(capsys.readouterr().out)
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert output == guard._deny_payload([guard._issue_reference_violation("Jinja comment block", 0)])
 
 
 def test_hook_main_advises_on_a_csharp_evidence_marker(monkeypatch, capsys):

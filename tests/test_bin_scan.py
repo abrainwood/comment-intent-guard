@@ -113,7 +113,9 @@ def test_scan_ignores_a_deleted_tracked_file_but_still_reports_an_untracked_viol
     assert "No such file" not in combined
 
 
-def test_scan_pathspec_is_not_shell_glob_expanded_against_the_repo_root(tmp_path, monkeypatch, capsys):
+def test_scan_reports_a_violation_nested_in_a_subdirectory_alongside_a_top_level_match(
+    tmp_path, monkeypatch, capsys
+):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / "README.md").write_text("hello\n")
     subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
@@ -122,10 +124,6 @@ def test_scan_pathspec_is_not_shell_glob_expanded_against_the_repo_root(tmp_path
         cwd=tmp_path,
         check=True,
     )
-    # A top-level match for one glob in the pathspec (top.py) sits alongside
-    # a match nested in a subdirectory (sub/bad.py). If the shell expands
-    # the pathspec's *.py against the cwd before git ever sees it, only the
-    # top-level match survives and the nested violation goes unreported.
     (tmp_path / "top.py").write_text("def add(a, b):\n    return a + b\n")
     sub = tmp_path / "sub"
     sub.mkdir()
@@ -377,6 +375,27 @@ def test_scan_delegates_listing_entirely_to_the_python_scan_mode(tmp_path):
     )
 
     assert result.stdout.strip() == "ARGV:--scan"
+
+
+def test_scan_forwards_its_own_extra_arguments_after_the_internal_scan_flag(tmp_path):
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "bin").mkdir(parents=True)
+    wrapper_copy = plugin_root / "bin" / "comment-intent-guard"
+    wrapper_copy.write_bytes(_BIN_WRAPPER.read_bytes())
+    wrapper_copy.chmod(0o755)
+    (plugin_root / "comment_intent_guard.py").write_text(
+        "import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit(0)\n"
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_repo_with_a_commit(repo)
+
+    result = subprocess.run(
+        ["sh", str(wrapper_copy), "scan", "junk"], cwd=repo, capture_output=True, text=True
+    )
+
+    assert result.stdout.strip() == "ARGV:--scan junk"
 
 
 def test_check_subcommand_rejects_the_internal_scan_flag(tmp_path):

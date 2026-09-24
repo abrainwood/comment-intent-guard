@@ -20,6 +20,10 @@ def _load_module():
 guard = _load_module()
 
 
+def _csharp_test_doc_violation(name, row):
+    return guard._test_docstring_violation(name, row, "an XML doc comment", "XML doc comment")
+
+
 def test_line_comment_with_a_date_is_flagged():
     text = "int x = 1; // fixed on 2026-01-05\n"
 
@@ -57,7 +61,7 @@ def test_line_comment_run_of_exactly_the_threshold_line_count_is_not_flagged():
 
     _, findings = guard._scan_csharp_comments(text)
 
-    assert not any(message.startswith("Comment run of") for message, _ in findings)
+    assert findings == []
 
 
 def test_oversize_line_comment_run_is_flagged_even_with_a_leading_bom():
@@ -93,7 +97,7 @@ def test_doc_comment_block_of_exactly_the_threshold_line_count_is_not_flagged():
 
     _, findings = guard._scan_csharp_comments(text)
 
-    assert not any(message.startswith("XML doc comment spans") for message, _ in findings)
+    assert findings == []
 
 
 def test_find_csharp_findings_returns_the_advisory_half():
@@ -138,7 +142,7 @@ def test_doc_comment_on_a_fact_test_method_is_a_blocking_violation():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [
-        (guard._test_docstring_violation("ChecksTheThing", 3, "an XML doc comment", "XML doc comment"), (3, 3)),
+        (_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3)),
     ]
 
 
@@ -155,7 +159,7 @@ def test_doc_comment_before_a_test_attribute_among_other_attributes_is_blocked()
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [
-        (guard._test_docstring_violation("ChecksTheThing", 4, "an XML doc comment", "XML doc comment"), (4, 4)),
+        (_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4)),
     ]
 
 
@@ -172,7 +176,7 @@ def test_doc_comment_before_a_blank_line_then_attribute_is_blocked():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [
-        (guard._test_docstring_violation("ChecksTheThing", 4, "an XML doc comment", "XML doc comment"), (4, 4)),
+        (_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4)),
     ]
 
 
@@ -188,7 +192,7 @@ def test_doc_comment_with_a_stray_triple_slash_line_before_the_signature_is_bloc
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
-    expected = (guard._test_docstring_violation("ChecksTheThing", 4, "an XML doc comment", "XML doc comment"), (4, 4))
+    expected = (_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))
     assert violations == [expected, expected]
 
 
@@ -204,7 +208,7 @@ def test_doc_comment_before_a_fully_qualified_attribute_is_blocked():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [
-        (guard._test_docstring_violation("ChecksTheThing", 3, "an XML doc comment", "XML doc comment"), (3, 3)),
+        (_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3)),
     ]
 
 
@@ -220,7 +224,7 @@ def test_doc_comment_before_a_generic_test_method_is_blocked():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [
-        (guard._test_docstring_violation("ChecksTheThing", 3, "an XML doc comment", "XML doc comment"), (3, 3)),
+        (_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3)),
     ]
 
 
@@ -236,7 +240,7 @@ def test_javadoc_style_block_comment_before_a_test_method_is_blocked():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [
-        (guard._test_docstring_violation("ChecksTheThing", 3, "an XML doc comment", "XML doc comment"), (3, 3)),
+        (_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3)),
     ]
 
 
@@ -283,8 +287,8 @@ def test_every_documented_test_method_is_blocked_even_after_a_plain_comment():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [
-        (guard._test_docstring_violation("ChecksA", 4, "an XML doc comment", "XML doc comment"), (4, 4)),
-        (guard._test_docstring_violation("ChecksB", 10, "an XML doc comment", "XML doc comment"), (10, 10)),
+        (_csharp_test_doc_violation("ChecksA", 4), (4, 4)),
+        (_csharp_test_doc_violation("ChecksB", 10), (10, 10)),
     ]
 
 
@@ -320,7 +324,12 @@ def test_doc_comment_before_a_same_line_attribute_and_signature_is_blocked():
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
-    assert any("ChecksTheThing" in message and "no caller" in message for message, _ in violations)
+    assert violations == [
+        (
+            _csharp_test_doc_violation("ChecksTheThing", 2),
+            (2, 2),
+        )
+    ]
 
 
 def test_doc_comment_before_a_same_line_attribute_does_not_misattribute_the_body():
@@ -494,7 +503,12 @@ def test_doc_comment_before_an_mstest_test_method_attribute_is_blocked():
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
-    assert any("no caller" in message for message, _ in violations)
+    assert violations == [
+        (
+            _csharp_test_doc_violation("ChecksTheThing", 3),
+            (3, 3),
+        )
+    ]
 
 
 def test_doc_comment_on_a_different_member_than_the_test_attribute_is_not_blocked():
@@ -543,6 +557,26 @@ def test_unterminated_regular_string_does_not_swallow_the_next_real_comment():
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == [("line", 1, 1, " fixed on 2026-01-05")]
+
+
+def test_unterminated_block_comment_consumes_the_rest_of_the_file_as_a_single_span():
+    text = "/* a // closes #12"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("block", 0, 0, " a // closes #12")]
+
+
+def test_two_tightly_adjacent_block_comments_on_one_line_each_get_their_own_span():
+    text = "/*a*//*b*/ // closes #12\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [
+        ("block", 0, 0, "a"),
+        ("block", 0, 0, "b"),
+        ("line", 0, 0, " closes #12"),
+    ]
 
 
 def test_adjacent_quotes_in_a_regular_string_are_not_doubling_escaped():
@@ -609,6 +643,14 @@ def test_skip_raw_interpolation_hole_tracks_nested_brace_depth_past_a_literal():
     assert end == len(hole)
 
 
+def test_nested_brace_depth_in_a_single_dollar_raw_string_hole_is_tracked_past_the_first_close():
+    text = 'var j = $"""{ new { a = 1 } } // not"""; // closes #12\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " closes #12")]
+
+
 def test_nested_braces_and_string_inside_a_raw_interpolation_hole_are_skipped():
     text = 'var j = $$"""{{ new { a = "}" } }}"""; // real #4\n'
 
@@ -623,6 +665,14 @@ def test_skip_interpolated_string_consumes_a_literal_double_brace_pair():
     end = guard._csharp_skip_interpolated_string(text, 0, False)
 
     assert end == len(text)
+
+
+def test_double_brace_immediately_before_the_closing_quote_stays_inside_the_string():
+    text = 'var s = $"{x}}}"; // closes #12\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " closes #12")]
 
 
 def test_double_brace_literal_inside_a_regular_interpolated_string_is_not_a_hole():
@@ -813,7 +863,7 @@ def test_doc_comment_after_the_attribute_and_before_the_signature_is_blocked():
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
-    assert violations == [(guard._test_docstring_violation("T", 3, "an XML doc comment", "XML doc comment"), (3, 3))]
+    assert violations == [(_csharp_test_doc_violation("T", 3), (3, 3))]
 
 
 def test_doc_comment_before_an_attribute_with_a_bracket_inside_a_string_argument_is_blocked():
@@ -828,5 +878,5 @@ def test_doc_comment_before_an_attribute_with_a_bracket_inside_a_string_argument
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [
-        (guard._test_docstring_violation("ChecksTheThing", 3, "an XML doc comment", "XML doc comment"), (3, 3)),
+        (_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3)),
     ]
