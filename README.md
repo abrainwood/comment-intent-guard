@@ -6,6 +6,19 @@ comment runs - that belongs in the issue, PR, or design doc instead. Some
 findings are advisory; a few are bright-line denials. Python, YAML, Jinja,
 and C#.
 
+## Supported languages
+
+| Language | Extensions | Test-docstring bright line fires on |
+|---|---|---|
+| Python | `.py` | any docstring on a `test_*`/`Test*` function or method |
+| YAML | `.yaml`, `.yml` | not applicable - YAML has no test functions |
+| Jinja | `.jinja`, `.j2` | not applicable - Jinja has no test functions |
+| C# | `.cs` | a `///` XML doc block immediately preceding a method carrying `[Fact]`, `[Theory]`, `[Test]`, `[TestCase]`, or `[TestMethod]` - a test method under another framework's attribute is not recognized |
+
+All four get the same evidence-marker (date/measurement/SHA), issue-reference,
+external-id, oversize-docstring, and comment-run checks - see Bright lines and
+advisory findings below.
+
 ## Install
 
 ```
@@ -41,7 +54,20 @@ To pin the plugin for a whole team, commit `.claude/settings.json` with:
 - **CI gate** (`gate.yml`, a reusable workflow). Runs on pull requests,
   diffs against the PR's merge-base, and fails the build on a bright-line or
   internal-error exit; advisory findings are posted as PR annotations, not
-  blocking.
+  blocking. `comment-guard-init` drops a caller workflow into the target
+  repo's `.github/workflows/` that pins `guard-ref` to a tag, so a consumer
+  repo doesn't float onto an unreleased commit:
+
+  ```yaml
+  name: comment-intent-guard
+
+  on:
+    pull_request:
+
+  jobs:
+    comment-guard:
+      uses: abrainwood/comment-intent-guard/.github/workflows/gate.yml@comment-intent-guard--v1.0.0
+  ```
 
 ## Skills
 
@@ -58,12 +84,16 @@ To pin the plugin for a whole team, commit `.claude/settings.json` with:
 
 ```
 comment-intent-guard scan
-comment_intent_guard.py --all <files...>
-comment_intent_guard.py --base <git-ref> <files...>
+comment-intent-guard check --all <files...>
+comment-intent-guard check --base <git-ref> <files...>
+comment-intent-guard init
 ```
 
-`scan` covers everything uncommitted; `--all` scans whole files; `--base
-<ref>` restricts advisory findings to lines added since `<ref>`.
+`scan` covers everything uncommitted, tracked and untracked. `check --all`
+scans whole files; `check --base <ref>` restricts advisory findings to
+lines added since `<ref>` (bright-line findings still apply to the whole
+file). `init` wires the guard into the current repo - see the Install
+section above.
 
 ### Exit codes
 
