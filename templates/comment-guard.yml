@@ -1,0 +1,9 @@
+# Copy into .github/workflows/ to enforce the guard on every PR.
+name: comment-intent-guard
+
+on:
+  pull_request:
+
+jobs:
+  comment-guard:
+    uses: abrainwood/comment-intent-guard/.github/workflows/gate.yml@comment-intent-guard--v1.0.0

@@ -1,0 +1,82 @@
+name: comment-intent-guard gate
+
+# Runs only on pull_request-triggered call chains: it diffs the PR's base
+# ref against HEAD, which is meaningless outside a pull request.
+
+on:
+  workflow_call:
+    inputs:
+      python-version:
+        description: Python version to run the guard under.
+        type: string
+        default: "3.12"
+      paths:
+        description: Glob override for the files to check (default guard-covered extensions).
+        type: string
+        default: "*.py *.yaml *.yml *.jinja *.j2"
+      guard-ref:
+        description: Tag of abrainwood/comment-intent-guard to check the guard out from.
+        type: string
+        default: "comment-intent-guard--v1.0.0"
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          repository: abrainwood/comment-intent-guard
+          ref: ${{ inputs.guard-ref }}
+          path: .comment-intent-guard-checkout
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Run the guard over this PR's changed files
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          PATHS: ${{ inputs.paths }}
+        run: |
+          set -uo pipefail
+          # Word-split PATHS without letting the shell glob each pattern
+          # against the runner's cwd first - that would silently narrow a
+          # pattern like *.py to root-level matches before git ever sees it.
+          set -f
+          read -ra patterns <<< "${PATHS}"
+          set +f
+          # --base only diff-scopes advisory findings; a blocking finding
+          # anywhere in a listed file's content still fails the build.
+          mapfile -t files < <(git diff --name-only --diff-filter=ACMR "origin/${BASE_REF}...HEAD" -- "${patterns[@]}")
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "No changed files matching '${PATHS}' - nothing for the guard to check."
+            exit 0
+          fi
+          # Two-dot against the branch tip would attribute main's own moves to
+          # this PR; the file list above is three-dot, so match it.
+          base="$(git merge-base "origin/${BASE_REF}" HEAD)"
+          set +e
+          output="$(python3 .comment-intent-guard-checkout/comment_intent_guard.py --base "$base" "${files[@]}")"
+          code=$?
+          set -e
+          printf '%s\n' "$output"
+          case "$code" in
+            0) exit 0 ;;
+            1)
+              while IFS= read -r line; do
+                [ -n "$line" ] || continue
+                printf '::warning file=%s::%s\n' "${line%%: *}" "${line#*: }"
+              done <<< "$output"
+              exit 0
+              ;;
+            3|4) echo "comment_intent_guard exited $code - failing the build" >&2; exit 1 ;;
+            *) echo "comment_intent_guard exited $code (unexpected) - failing the build" >&2; exit 1 ;;
+          esac
