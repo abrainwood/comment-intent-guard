@@ -922,7 +922,9 @@ def _deny_payload(violations):
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": (
-                "COMMENT INTENT - bright line violated:\n\n" + "\n\n".join(violations)
+                "COMMENT INTENT - bright line violated:\n\n"
+                + "\n\n".join(violations)
+                + "\n\nSee /comment-intent-guard:self-documenting-code for how to fix this."
             ),
         }
     }

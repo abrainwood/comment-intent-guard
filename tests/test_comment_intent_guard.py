@@ -904,6 +904,7 @@ def test_e2e_test_docstring_denies_the_edit():
     output = json.loads(result.stdout)
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "test name" in output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "/comment-intent-guard:self-documenting-code" in output["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_docstring_on_a_non_test_function_is_not_a_blocking_violation():
