@@ -52,6 +52,22 @@ def test_e2e_write_py_file_with_oversize_docstring_emits_advisory():
     assert "docstring" in output["hookSpecificOutput"]["additionalContext"].lower()
 
 
+def test_advisory_payload_names_the_pretooluse_event():
+    prose_lines = "\n".join(f"    reason {i}" for i in range(13))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "content": f'"""\n{prose_lines}\n"""\n',
+        },
+    }
+
+    result = _run_hook(payload)
+
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+
+
 def test_e2e_edit_py_file_with_evidence_marker_emits_advisory():
     payload = {
         "tool_name": "Edit",
@@ -85,6 +101,22 @@ def test_e2e_python_comment_with_an_issue_reference_denies_the_edit():
     output = json.loads(result.stdout)
     assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_deny_payload_names_the_pretooluse_event():
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "old_string": "pass\n",
+            "new_string": "# Issue #91's own branch point\npass\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
 
 
 def test_e2e_yaml_jinja_comment_with_an_issue_reference_denies_the_edit():
@@ -397,6 +429,17 @@ def test_short_comment_with_an_issue_reference_is_blocked():
     assert any("BLOCKED" in v for v, _ in violations)
 
 
+def test_trailing_python_comment_with_an_issue_reference_is_blocked_on_its_line():
+    text = "x = 1  # closes #91\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert span == (1, 1)
+    assert "Comment near line 1" in message
+
+
 def test_short_comment_with_an_issue_reference_is_not_also_an_advisory_finding():
     text = "# Issue #91's own branch point\n"
 
@@ -416,6 +459,31 @@ def test_yaml_description_block_scalar_with_a_leading_ordinal_is_not_flagged_as_
     violations = guard.find_yaml_issue_reference_violations(text)
 
     assert violations == []
+
+
+def test_docstring_with_an_issue_reference_is_blocked():
+    text = '"""\nfixes the flapping bug, see #91 for context\n"""\n'
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert span == (1, 3)
+    assert "Docstring near line 1" in message
+
+
+def test_yaml_description_block_with_an_issue_reference_is_blocked():
+    text = (
+        "description: >-\n"
+        "  see #91 for context on this default\n"
+        "next_key: value\n"
+    )
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert "Description block scalar near line 2" in message
 
 
 def test_yaml_jinja_comment_with_an_issue_reference_is_blocked():
