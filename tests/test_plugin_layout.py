@@ -70,6 +70,20 @@ def test_hooks_json_wires_pretooluse_on_write_or_edit_via_plugin_root():
     assert "/Users" not in command
 
 
+def test_hooks_json_quotes_claude_plugin_root_in_every_command_so_spaces_in_the_path_survive():
+    hooks = json.loads(_HOOKS_JSON.read_text())
+
+    commands = [
+        step["command"]
+        for entries in hooks["hooks"].values()
+        for entry in entries
+        for step in entry["hooks"]
+    ]
+    assert commands
+    for command in commands:
+        assert re.search(r'"\$\{CLAUDE_PLUGIN_ROOT\}', command), command
+
+
 def test_state_path_defaults_under_the_home_directory(monkeypatch, tmp_path):
     monkeypatch.delenv("COMMENT_INTENT_GUARD_STATE", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))

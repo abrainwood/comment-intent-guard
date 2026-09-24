@@ -2,15 +2,30 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(git rev-parse --show-toplevel)"
 CLAUDE_MD_MARKER="<!-- comment-intent-guard:comment-guard-init -->"
+
+usage() {
+  echo "usage: comment-intent-guard init [--force]"
+}
 
 FORCE=0
 for arg in "$@"; do
-  if [ "$arg" = "--force" ]; then
-    FORCE=1
-  fi
+  case "$arg" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --force)
+      FORCE=1
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
 done
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 JSON_DEST="$REPO_ROOT/.comment-intent-guard.json"
 JSON_SRC="$SCRIPT_DIR/templates/comment-intent-guard.json"

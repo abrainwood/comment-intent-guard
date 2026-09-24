@@ -1521,7 +1521,8 @@ def _check_files(files, base=None):
 
 
 def _cli_main(argv):
-    parser = argparse.ArgumentParser(prog="comment_intent_guard")
+    prog = os.environ.get("COMMENT_INTENT_GUARD_PROG", "comment_intent_guard")
+    parser = argparse.ArgumentParser(prog=prog)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--base")
     mode.add_argument("--all", action="store_true")

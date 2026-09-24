@@ -70,6 +70,55 @@ def test_second_run_is_a_no_op(tmp_path):
     assert _snapshot(tmp_path) == before
 
 
+def test_help_prints_usage_and_exits_0_without_touching_the_repo(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["bash", str(_INIT_SH), "--help"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert "[--force]" in result.stdout
+    assert not (tmp_path / ".comment-intent-guard.json").exists()
+    assert not (tmp_path / ".githooks").exists()
+    assert not (tmp_path / ".github").exists()
+    assert not (tmp_path / "CLAUDE.md").exists()
+    hooks_path = subprocess.run(
+        ["git", "config", "core.hooksPath"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert hooks_path.returncode != 0
+    assert hooks_path.stdout.strip() == ""
+
+
+def test_unknown_arg_prints_usage_to_stderr_and_exits_2_without_touching_the_repo(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["bash", str(_INIT_SH), "--bogus"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 2
+    assert "[--force]" in result.stderr
+    assert not (tmp_path / ".comment-intent-guard.json").exists()
+    assert not (tmp_path / ".githooks").exists()
+    assert not (tmp_path / ".github").exists()
+    assert not (tmp_path / "CLAUDE.md").exists()
+    hooks_path = subprocess.run(
+        ["git", "config", "core.hooksPath"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert hooks_path.returncode != 0
+    assert hooks_path.stdout.strip() == ""
+
+
+def test_help_outside_a_git_repo_prints_usage_and_exits_0(tmp_path):
+    result = subprocess.run(
+        ["bash", str(_INIT_SH), "--help"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert "[--force]" in result.stdout
+
+
 def test_existing_hookspath_pointing_elsewhere_is_refused_and_nothing_is_written(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "core.hooksPath", "husky/hooks"], cwd=tmp_path, check=True)
@@ -335,6 +384,15 @@ def test_claude_md_append_separates_with_a_newline_when_file_lacks_trailing_newl
 
 
 _BIN_WRAPPER = _REPO_ROOT / "bin" / "comment-intent-guard"
+
+
+def test_bin_wrapper_check_help_shows_the_comment_intent_guard_check_prog_name(tmp_path):
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "check", "--help"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert "usage: comment-intent-guard check " in result.stdout
 
 
 def test_bin_wrapper_init_behaves_like_init_sh(tmp_path):

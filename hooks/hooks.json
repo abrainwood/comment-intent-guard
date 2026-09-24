@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/comment_intent_guard.py"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/comment_intent_guard.py\""
           }
         ]
       }
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py\""
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/bash_backstop.py",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/bash_backstop.py\"",
             "timeout": 10
           }
         ]
