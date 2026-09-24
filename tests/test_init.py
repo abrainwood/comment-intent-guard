@@ -232,6 +232,17 @@ def test_bin_wrapper_init_behaves_like_init_sh(tmp_path):
     assert (tmp_path / "CLAUDE.md").exists()
 
 
+def test_bin_wrapper_resolves_through_a_symlink(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    link = tmp_path / "civg"
+    link.symlink_to(_BIN_WRAPPER)
+
+    result = subprocess.run(["sh", str(link), "init"], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode == 0
+    assert (tmp_path / ".comment-intent-guard.json").exists()
+
+
 def test_bin_wrapper_check_exits_3_on_a_violating_file(tmp_path):
     violating = tmp_path / "bad.py"
     violating.write_text('def test_x():\n    """a docstring"""\n')
