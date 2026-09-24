@@ -1,29 +1,69 @@
 # comment-intent-guard
 
-A PreToolUse hook and CLI that flags rationale written into source comments -
-dates, measurements, commit SHAs, oversize docstrings and comment runs - that
-belongs in the issue, PR, or design doc instead. Some findings are advisory;
-a few (external ticket IDs, docstrings on test functions) are bright-line
-denials.
+A Claude Code plugin that flags rationale written into source comments -
+dates, measurements, commit SHAs, issue references, oversize docstrings and
+comment runs - that belongs in the issue, PR, or design doc instead. Some
+findings are advisory; a few are bright-line denials. Python, YAML, and
+Jinja.
 
-## Hook mode
+## Install
 
-With no arguments, `comment_intent_guard.py` reads a Claude Code
-`PreToolUse` JSON payload from stdin and reports on the `content` /
-`new_string` of a `Write` or `Edit` tool call. A bright-line violation denies
-the tool call; an advisory finding is surfaced as additional context. Wire it
-up as a `PreToolUse` hook for `Write` and `Edit` in your Claude Code settings.
+```
+/plugin marketplace add abrainwood/comment-intent-guard
+/plugin install comment-intent-guard@comment-intent-guard
+```
+
+Then, from inside the repo you want it to guard, run
+`/comment-intent-guard:comment-guard-init` and make your first commit.
+
+To pin the plugin for a whole team, commit `.claude/settings.json` with:
+
+```json
+{
+  "extraKnownMarketplaces": {"comment-intent-guard": {"source": {"source": "github", "repo": "abrainwood/comment-intent-guard"}}},
+  "enabledPlugins": {"comment-intent-guard@comment-intent-guard": true}
+}
+```
+
+## The four enforcement layers
+
+- **PreToolUse deny.** A `Write`/`Edit` whose new content trips a bright
+  line is denied outright, before it lands on disk.
+- **PostToolUse Bash backstop.** Catches source written via `Bash` (heredocs,
+  `sed`, etc.), which the deny hook never sees. Session-scoped: seeded at
+  `SessionStart`, it only looks at lines added since the last check, capped
+  at 40 findings / 4KB. It never denies - findings surface as additional
+  context for Claude to act on.
+- **Pre-commit hook**, wired via `core.hooksPath`. Runs the guard over the
+  staged index content (not the working tree). Blocks the commit on a
+  bright-line finding; fails **open** with a warning if the guard can't be
+  found or errors internally, so a broken hook never blocks a commit.
+- **CI gate** (`gate.yml`, a reusable workflow). Runs on pull requests,
+  diffs against the PR's merge-base, and fails the build on a bright-line or
+  internal-error exit; advisory findings are posted as PR annotations, not
+  blocking.
+
+## Skills
+
+- **self-documenting-code** - the rule to apply before writing any comment
+  or docstring, and the remediation guide when a deny fires. See
+  `skills/self-documenting-code/SKILL.md` and its `comments.md`.
+- **comment-guard-init** - wires the guard into a repo: pre-commit hook, CI
+  gate, config, CLAUDE.md stanza. `/comment-intent-guard:comment-guard-init`.
+- **comment-guard-scan** - on-demand scan of everything uncommitted in the
+  repo, tracked and untracked, beyond what the current session already
+  flagged. `/comment-intent-guard:comment-guard-scan`.
 
 ## CLI mode
 
 ```
+comment-intent-guard scan
 comment_intent_guard.py --all <files...>
 comment_intent_guard.py --base <git-ref> <files...>
 ```
 
-Dispatches on file extension (`.py` vs `.yaml`/`.yml`). `--all` scans whole
-files. `--base <ref>` restricts findings to lines added since `<ref>` (via
-`git diff`), for CI use on a pull request.
+`scan` covers everything uncommitted; `--all` scans whole files; `--base
+<ref>` restricts advisory findings to lines added since `<ref>`.
 
 ### Exit codes
 
@@ -35,50 +75,36 @@ files. `--base <ref>` restricts findings to lines added since `<ref>` (via
 | 3 | A bright-line violation was found |
 | 4 | Internal error (unreadable file, unsupported Python version, ...) |
 
+## Bright lines and advisory findings
+
+Bright lines (deny/block): an issue reference (`#123`) in a comment,
+docstring, or YAML/Jinja comment block; a docstring on a test function; an
+external id (`SP-9`-style in a docstring, `sp1`-style in a filename or test
+name) not covered by the repo's allowlist.
+
+Advisory (surfaced, never blocks): a date, measurement, or SHA in a comment
+or docstring; a docstring over the 12-line threshold; a comment run over 4
+lines.
+
 ## Per-repo id allowlist
 
-Two bright lines flag identifier-shaped tokens as external ids: `_ID_TOKEN_RE`
-for a lowercase `sp1`-style token in a filename or test name, and
-`_EXTERNAL_ID_RE` for an uppercase, hyphenated `SP-9`-style token in a
-docstring, on the theory that nobody reading the code can tell what either
-means. Some repos have their own domain vocabulary that happens to match
-those shapes - a mandated naming convention for a golden-case corpus, say -
-and isn't an external ticket reference at all. Rather than hardcode one
-repo's vocabulary into this shared tool, a repo can declare its own.
-
-Drop a `.comment-intent-guard.json` file anywhere from the checked file's
-directory up to the filesystem root (its nearest ancestor wins):
+Two bright lines flag identifier-shaped tokens as external ids. Some repos
+have their own domain vocabulary that happens to match those shapes and
+isn't a ticket reference at all - declare it in `.comment-intent-guard.json`
+(nearest ancestor of the checked file wins):
 
 ```json
-{"id_prefix_allowlist": ["sp", "mg"]}
+{
+  "id_prefix_allowlist": ["sp", "mg"],
+  "filename_only_id_prefix_allowlist": ["gh"]
+}
 ```
 
-Each entry is a 2-6 letter lowercase prefix - the letters before the digits
-in `sp1`, or before the hyphen in `SP-9` (compared case-insensitively, so one
-declared `"sp"` clears both forms). A token matching either rule whose
-prefix is on the list is no longer a violation; every other bright line, and
-every token whose prefix isn't listed, is unaffected. This applies
-identically in hook mode, `--base`, and `--all`, since discovery walks up
-from the file being checked, not from the invoking process's own location.
-
-A repo with no such file gets today's behaviour, unchanged. A file that
-exists but can't be read or parsed, or whose shape is wrong, does **not**
-disable the rule - it's logged as a warning and treated as if no allowlist
-were declared, so the bright line stays fully enforced.
-
-A second, narrower key exempts the filename check only, leaving the
-docstring and test-name bright lines at full strength:
-
-```json
-{"filename_only_id_prefix_allowlist": ["gh"]}
-```
-
-Use this when a naming convention puts a real external id in filenames on
-purpose (a `gh<N>_<slug>.py` investigation-artifact convention, say) but the
-id still doesn't belong inside the file's own docstrings, comments, or test
-names - that's still where the rule earns its keep. Same shape, same
-malformed-config fallback as `id_prefix_allowlist`, and the two keys are
-independent: declaring one has no effect on the other.
+`id_prefix_allowlist` clears a prefix everywhere; `filename_only_id_prefix_allowlist`
+clears it in filenames only, for a convention like `gh<N>_<slug>.py` where
+the id still shouldn't appear in the file's own prose. A missing,
+unreadable, or malformed config file is a warning, not a disabled rule -
+the bright lines stay enforced.
 
 ## Requirements
 
@@ -86,6 +112,16 @@ Python 3.12 or newer - the Python analysis uses `tokenize`'s f-string token
 support, added in 3.12. Below that, Python findings are skipped and reported
 as exit code 4; YAML findings are unaffected. CI runs the suite on 3.12,
 3.13, and 3.14.
+
+Git 2.31 or newer for the pre-commit hook's native-hook path resolution
+(`git rev-parse --path-format=absolute`). See issue #19 for older-git
+fallback status.
+
+## Releases
+
+Tags are `comment-intent-guard--vX.Y.Z`. `gate.yml` pins a specific tag via
+its `guard-ref` input (default `comment-intent-guard--v1.0.0`). To pick up a
+new release in an installed plugin, run `claude plugin update`.
 
 ## Consumers
 
