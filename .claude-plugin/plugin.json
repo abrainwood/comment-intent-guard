@@ -1,7 +1,7 @@
 {
   "name": "comment-intent-guard",
   "version": "1.0.0",
-  "description": "Fail-open comment-intent checks for Python and YAML/Jinja source, enforced at Write/Edit time.",
+  "description": "Denies rationale written into source comments - test docstrings, ticket ids, dates, SHAs - at Write/Edit time, and advises on the rest. Python, YAML, Jinja.",
   "author": {
     "name": "Andrew Brainwood"
   }
