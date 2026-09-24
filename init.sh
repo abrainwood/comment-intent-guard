@@ -3,7 +3,6 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-PRE_COMMIT_MARKER="# comment-intent-guard pre-commit"
 CLAUDE_MD_MARKER="<!-- comment-intent-guard:comment-guard-init -->"
 
 FORCE=0
@@ -18,23 +17,17 @@ JSON_SRC="$SCRIPT_DIR/templates/comment-intent-guard.json"
 PRE_COMMIT_DEST="$REPO_ROOT/.githooks/pre-commit"
 PRE_COMMIT_SRC="$SCRIPT_DIR/templates/pre-commit.sh"
 WORKFLOW_DEST="$REPO_ROOT/.github/workflows/comment-guard.yml"
-WORKFLOW_SRC="$SCRIPT_DIR/templates/comment-guard.yml"
 CLAUDE_MD="$REPO_ROOT/CLAUDE.md"
+
+# The template carries an instructional comment for whoever browses the repo
+# of templates; strip it before it lands in a consumer's own workflow file.
+WORKFLOW_EFFECTIVE="$(mktemp)"
+trap 'rm -f "$WORKFLOW_EFFECTIVE"' EXIT
+tail -n +2 "$SCRIPT_DIR/templates/comment-guard.yml" > "$WORKFLOW_EFFECTIVE"
 
 refuse() {
   echo "init.sh: $1" >&2
   exit 1
-}
-
-refuse_if_not_ours() {
-  local dest="$1" src="$2" marker="$3"
-  [ -e "$dest" ] || return 0
-  if [ -n "$marker" ] && ! grep -qF "$marker" "$dest"; then
-    refuse "refusing to overwrite foreign file at $dest"
-  fi
-  if [ "$FORCE" -eq 0 ] && ! cmp -s "$dest" "$src"; then
-    refuse "refusing to overwrite $dest - it differs from the template (use --force)"
-  fi
 }
 
 existing_hooks_path="$(git -C "$REPO_ROOT" config core.hooksPath || true)"
@@ -42,54 +35,63 @@ if [ -n "$existing_hooks_path" ] && [ "$existing_hooks_path" != ".githooks" ]; t
   refuse "refusing to change core.hooksPath - it already points at $existing_hooks_path"
 fi
 
-native_hook="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)/hooks/pre-commit"
+git_common_dir_absolute() {
+  local raw
+  if raw="$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; then
+    printf '%s\n' "$raw"
+    return 0
+  fi
+  raw="$(git -C "$REPO_ROOT" rev-parse --git-common-dir)"
+  case "$raw" in
+    /*) printf '%s\n' "$raw" ;;
+    *) (cd "$REPO_ROOT" && cd "$raw" && pwd -P) ;;
+  esac
+}
+
+native_hook="$(git_common_dir_absolute)/hooks/pre-commit"
 if [ -e "$native_hook" ]; then
   refuse "refusing to install - a native pre-commit hook already exists at $native_hook"
 fi
-
-refuse_if_not_ours "$JSON_DEST" "$JSON_SRC" ""
-refuse_if_not_ours "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC" "$PRE_COMMIT_MARKER"
-refuse_if_not_ours "$WORKFLOW_DEST" "$WORKFLOW_SRC" ""
 
 write_report_line() {
   local dest="$1" verb="$2"
   echo "$verb ${dest#"$REPO_ROOT"/}"
 }
 
-write_template() {
-  local dest="$1" src="$2"
-  if [ -e "$dest" ]; then
-    if [ "$FORCE" -eq 1 ] && ! cmp -s "$dest" "$src"; then
-      cp "$src" "$dest"
-      write_report_line "$dest" "overwritten"
-      return 0
-    fi
+# Per-file sync: absent -> write; present+identical -> skip silently as
+# unchanged; present+different -> left alone unless --force AND forceable.
+sync_target() {
+  local dest="$1" src="$2" forceable="$3" merge_hint="${4:-}"
+  if [ ! -e "$dest" ]; then
+    mkdir -p "$(dirname "$dest")"
+    cp "$src" "$dest"
+    write_report_line "$dest" "created"
+    return 0
+  fi
+  if cmp -s "$dest" "$src"; then
     write_report_line "$dest" "unchanged"
     return 0
   fi
-  mkdir -p "$(dirname "$dest")"
-  cp "$src" "$dest"
-  write_report_line "$dest" "created"
+  if [ "$FORCE" -eq 1 ] && [ "$forceable" -eq 1 ]; then
+    cp "$src" "$dest"
+    write_report_line "$dest" "overwritten"
+    return 0
+  fi
+  local suffix=""
+  [ -n "$merge_hint" ] && suffix=" - $merge_hint"
+  write_report_line "$dest" "left alone (differs from template)$suffix"
 }
 
-write_template "$JSON_DEST" "$JSON_SRC"
+sync_target "$JSON_DEST" "$JSON_SRC" 0 "merge the two by hand, this file is never overwritten"
 
-if [ ! -e "$PRE_COMMIT_DEST" ]; then
-  mkdir -p "$REPO_ROOT/.githooks"
-  cp "$PRE_COMMIT_SRC" "$PRE_COMMIT_DEST"
+sync_target "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC" 1
+if [ -e "$PRE_COMMIT_DEST" ] && cmp -s "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC"; then
   chmod +x "$PRE_COMMIT_DEST"
-  write_report_line "$PRE_COMMIT_DEST" "created"
-elif ! cmp -s "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC"; then
-  cp "$PRE_COMMIT_SRC" "$PRE_COMMIT_DEST"
-  chmod +x "$PRE_COMMIT_DEST"
-  write_report_line "$PRE_COMMIT_DEST" "overwritten"
-else
-  write_report_line "$PRE_COMMIT_DEST" "unchanged"
 fi
 git -C "$REPO_ROOT" config core.hooksPath .githooks
 echo "core.hooksPath set to .githooks"
 
-write_template "$WORKFLOW_DEST" "$WORKFLOW_SRC"
+sync_target "$WORKFLOW_DEST" "$WORKFLOW_EFFECTIVE" 1
 
 if [ ! -f "$CLAUDE_MD" ] || ! grep -qF "$CLAUDE_MD_MARKER" "$CLAUDE_MD"; then
   claude_md_existed=0
