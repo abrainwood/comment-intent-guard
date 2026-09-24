@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""SessionStart hook: prints the always-on self-documenting-code rule stanza."""
 import json
 import sys
 
