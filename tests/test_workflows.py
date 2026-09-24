@@ -1,5 +1,9 @@
+import os
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -30,17 +34,72 @@ def _run_step_script(workflow):
     return run_step["run"]
 
 
-def test_gate_run_step_handles_exit_codes_0_1_3_and_4():
-    script = _run_step_script(_load_gate())
+def _bash_with_mapfile():
+    for candidate in ("/opt/homebrew/bin/bash", "/usr/local/bin/bash", shutil.which("bash")):
+        if candidate and Path(candidate).exists() and subprocess.run(
+            [candidate, "-c", "type mapfile"], capture_output=True
+        ).returncode == 0:
+            return candidate
+    return None
 
-    # 0: clean, no findings - the build passes without comment.
-    # 1: advisory findings only - annotate but still pass.
-    # 3/4: bright-line or internal-error findings - fail the build.
-    assert "0)" in script
-    assert "1)" in script
-    assert "3)" in script or "3|4)" in script
-    assert "4)" in script or "3|4)" in script
-    assert "::warning" in script
+
+_BASH = _bash_with_mapfile()
+
+
+def _init_gate_test_repo(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True)
+    (tmp_path / "base.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "branch", "origin/main"], cwd=tmp_path, check=True)
+    (tmp_path / "thing.py").write_text("y = 2\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "change"], cwd=tmp_path, check=True)
+    checkout_dir = tmp_path / ".comment-intent-guard-checkout"
+    checkout_dir.mkdir()
+    return checkout_dir / "comment_intent_guard.py"
+
+
+def _run_gate_step_with_stub_guard(tmp_path, stub_body):
+    stub_path = _init_gate_test_repo(tmp_path)
+    stub_path.write_text(stub_body)
+    script = _run_step_script(_load_gate())
+    env = dict(os.environ, BASE_REF="main", PATHS="*.py")
+    return subprocess.run(
+        [_BASH, "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+    )
+
+
+def _stub_body_exiting(code):
+    return f'import sys\nprint("stub output")\nsys.exit({code})\n'
+
+
+@pytest.mark.skipif(_BASH is None, reason="no bash with mapfile support found on PATH")
+@pytest.mark.parametrize(
+    "stub_exit_code, expected_step_exit_code",
+    [(0, 0), (1, 0), (3, 1), (4, 1), (2, 1)],
+    ids=["clean", "advisory", "bright_line", "internal_error", "unexpected_code"],
+)
+def test_gate_run_step_maps_guard_exit_code_to_build_result(
+    tmp_path, stub_exit_code, expected_step_exit_code
+):
+    result = _run_gate_step_with_stub_guard(tmp_path, _stub_body_exiting(stub_exit_code))
+
+    assert result.returncode == expected_step_exit_code
+    assert "stub output" in result.stdout
+
+
+@pytest.mark.skipif(_BASH is None, reason="no bash with mapfile support found on PATH")
+def test_gate_run_step_emits_a_warning_annotation_per_advisory_line(tmp_path):
+    result = _run_gate_step_with_stub_guard(
+        tmp_path, 'import sys\nprint("thing.py: msg")\nsys.exit(1)\n'
+    )
+
+    assert result.returncode == 0
+    assert "::warning file=thing.py::msg" in result.stdout
 
 
 def test_gate_run_step_disables_globbing_before_word_splitting_paths():

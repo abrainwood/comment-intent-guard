@@ -65,30 +65,10 @@ def test_declared_functions_exist_on_the_module():
     assert not missing, f"declared public functions missing from the module: {missing}"
 
 
-def test_declared_function_parameters_match_the_declared_arity():
-    for name, params in PUBLIC_FUNCTIONS.items():
-        actual = tuple(inspect.signature(getattr(guard, name)).parameters)
-        assert actual == params, f"{name} has parameters {actual}, declared as {params}"
-
-
-def _shape_problems(findings):
-    problems = []
-    for finding in findings:
-        try:
-            message, span = finding
-        except (TypeError, ValueError) as exc:
-            problems.append(str(exc))
-            continue
-        if not isinstance(message, str):
-            problems.append(f"message is {type(message).__name__}, not str")
-        try:
-            start, end = span
-        except (TypeError, ValueError) as exc:
-            problems.append(str(exc))
-            continue
-        if not (isinstance(start, int) and isinstance(end, int)):
-            problems.append(f"span is ({type(start).__name__}, {type(end).__name__}), not (int, int)")
-    return problems
+@pytest.mark.parametrize("name, params", list(PUBLIC_FUNCTIONS.items()), ids=list(PUBLIC_FUNCTIONS))
+def test_declared_function_parameters_match_the_declared_arity(name, params):
+    actual = tuple(inspect.signature(getattr(guard, name)).parameters)
+    assert actual == params
 
 
 def _oversize_docstring_text():
@@ -106,15 +86,6 @@ def _misplaced_rationale_sample():
 CONSUMER_MESSAGE_PREFIXES = {
     "find_misplaced_rationale": "Docstring spans",
 }
-
-
-def _missing_consumer_prefixes(module):
-    missing = []
-    for fn_name, prefix in CONSUMER_MESSAGE_PREFIXES.items():
-        findings = getattr(module, fn_name)(_oversize_docstring_text())
-        if not any(message.startswith(prefix) for message, _ in findings):
-            missing.append((fn_name, prefix))
-    return missing
 
 
 def _yaml_findings_sample():
@@ -166,7 +137,11 @@ def _csharp_issue_reference_violations_sample():
 def test_finding_producing_function_returns_well_shaped_findings(build_findings):
     findings = build_findings()
     assert findings
-    assert _shape_problems(findings) == []
+    shapes = [
+        (isinstance(message, str), isinstance(start, int), isinstance(end, int))
+        for message, (start, end) in findings
+    ]
+    assert shapes == [(True, True, True)] * len(findings)
 
 
 def test_docstring_finding_span_tracks_where_the_docstring_actually_sits():
@@ -307,30 +282,13 @@ def test_surface_check_catches_a_declared_symbol_dropped_from_the_declaration():
     assert _module_public_names(guard) != shrunk_declaration
 
 
-def test_shape_check_catches_a_finding_producer_returning_bare_strings():
-    mutated = _load_module(name="comment_intent_guard_bare_strings_for_test")
-    mutated.find_misplaced_rationale = lambda text: ["a bare string finding with no span at all"]
+@pytest.mark.parametrize(
+    "fn_name, prefix", list(CONSUMER_MESSAGE_PREFIXES.items()), ids=list(CONSUMER_MESSAGE_PREFIXES)
+)
+def test_consumer_message_prefix_is_still_produced(fn_name, prefix):
+    findings = getattr(guard, fn_name)(_oversize_docstring_text())
 
-    problems = _shape_problems(mutated.find_misplaced_rationale("irrelevant"))
-
-    assert problems
-
-
-def test_consumer_message_prefixes_are_still_produced():
-    assert _missing_consumer_prefixes(guard) == []
-
-
-def test_consumer_prefix_check_catches_a_reworded_finding_message():
-    reworded = _load_module(name="comment_intent_guard_reworded_message_for_test")
-    real_finder = reworded.find_misplaced_rationale
-    reworded.find_misplaced_rationale = lambda text: [
-        (message.replace("Docstring spans", "Docstring covers"), span)
-        for message, span in real_finder(text)
-    ]
-
-    missing = _missing_consumer_prefixes(reworded)
-
-    assert missing == [("find_misplaced_rationale", "Docstring spans")]
+    assert any(message.startswith(prefix) for message, _ in findings)
 
 
 def test_existence_check_catches_a_declared_function_renamed_on_the_module():

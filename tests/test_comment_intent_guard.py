@@ -1,5 +1,6 @@
 import ast
 import importlib.util
+import io
 import json
 import subprocess
 import sys
@@ -68,23 +69,6 @@ def test_e2e_edit_py_file_with_evidence_marker_emits_advisory():
     output = json.loads(result.stdout)
     assert "date" in output["hookSpecificOutput"]["additionalContext"].lower() or \
         "review finding" in output["hookSpecificOutput"]["additionalContext"].lower()
-
-
-def test_e2e_python_comment_with_an_issue_reference_denies_the_edit():
-    payload = {
-        "tool_name": "Edit",
-        "tool_input": {
-            "file_path": "/repo/scripts/thing.py",
-            "old_string": "pass\n",
-            "new_string": "# Issue #91's own branch point\npass\n",
-        },
-    }
-
-    result = _run_hook(payload)
-
-    output = json.loads(result.stdout)
-    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
 
 
 def test_e2e_yaml_jinja_comment_with_an_issue_reference_denies_the_edit():
@@ -169,6 +153,47 @@ def test_e2e_write_yaml_file_with_oversize_hash_run_emits_advisory_never_deny():
     output = json.loads(result.stdout)
     assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
     assert "permissionDecision" not in output["hookSpecificOutput"]
+
+
+def test_hook_advises_on_an_oversize_comment_run_in_a_yml_file():
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"# reason {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/zones.yml",
+            "content": f"{prose_lines}\nkey: value\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_hook_advises_on_an_oversize_jinja_comment_in_a_j2_file():
+    body = "\n".join(f"  reason {i}" for i in range(guard.JINJA_BLOCK_LINE_THRESHOLD + 1))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.j2",
+            "content": f"{{#\n{body}\n#}}\n{{{{ value }}}}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD + 1
+    assert (
+        f"Jinja '{{# #}}' block spans {body_line_count + 2} lines "
+        f"(over the {guard.JINJA_BLOCK_LINE_THRESHOLD}-line threshold) "
+        "starting near line 1"
+    ) in context
 
 
 def test_e2e_edit_yaml_file_only_analyses_the_new_string_fragment():
@@ -264,13 +289,16 @@ def test_version_guard_raises_analysis_unavailable_below_python_3_12():
 
 
 def test_oversize_docstring_is_flagged():
-    lines = "\n".join(f"    reason {i}" for i in range(13))
+    body_line_count = guard.DOCSTRING_LINE_THRESHOLD + 1
+    lines = "\n".join(f"    reason {i}" for i in range(body_line_count))
     text = f'"""\n{lines}\n"""\n'
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(f"Docstring spans {body_line_count + 2} lines")
+    assert span == (1, body_line_count + 2)
 
 
 def test_docstring_span_covers_the_full_block_including_the_closing_delimiter():
@@ -310,13 +338,16 @@ def test_mid_function_bare_triple_quoted_string_is_flagged_though_not_a_real_ast
 )
 @pytest.mark.parametrize("quote", ['"""', "'''"])
 def test_prefixed_oversize_docstring_is_flagged(prefix, quote):
-    lines = "\n".join(f"    reason {i}" for i in range(13))
+    body_line_count = guard.DOCSTRING_LINE_THRESHOLD + 1
+    lines = "\n".join(f"    reason {i}" for i in range(body_line_count))
     text = f"{prefix}{quote}\n{lines}\n{quote}\n"
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(f"Docstring spans {body_line_count + 2} lines")
+    assert span == (1, body_line_count + 2)
 
 
 def test_short_docstring_naming_a_test_case_is_not_flagged():
@@ -335,8 +366,10 @@ def test_short_comment_with_a_date_is_flagged_despite_being_under_threshold():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("date" in f.lower() or "measurement" in f.lower() or "sha" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_short_comment_with_a_measurement_is_flagged():
@@ -344,7 +377,10 @@ def test_short_comment_with_a_measurement_is_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_short_comment_with_a_sha_is_flagged():
@@ -352,7 +388,10 @@ def test_short_comment_with_a_sha_is_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_short_comment_with_a_plain_number_is_not_flagged_as_a_sha():
@@ -364,12 +403,13 @@ def test_short_comment_with_a_plain_number_is_not_flagged_as_a_sha():
 
 
 def test_trailing_comment_with_a_sha_is_flagged():
-    text = "MAX_GAP = 4  # per review of 56305c8ab\n"
+    text = "x = 1\nMAX_GAP = 4  # per review of 56305c8ab\n"
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("sha" in f.lower() or "date" in f.lower() or "measurement" in f.lower() for f, _ in findings)
+    message, span = next(f for f in findings if f[0].startswith("Comment near line"))
+    assert message.startswith("Comment near line 2 contains a date, measurement, or SHA")
+    assert span == (2, 2)
 
 
 def test_trailing_hash_inside_a_string_literal_is_not_a_comment():
@@ -393,8 +433,21 @@ def test_short_comment_with_an_issue_reference_is_blocked():
 
     violations = guard.find_issue_reference_violations(text)
 
-    assert violations
-    assert any("BLOCKED" in v for v, _ in violations)
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Comment near line 1 contains an issue reference")
+    assert span == (1, 1)
+
+
+def test_trailing_python_comment_with_an_issue_reference_is_blocked_on_its_line():
+    text = "x = 1  # closes #91\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Comment near line 1 contains an issue reference")
+    assert span == (1, 1)
 
 
 def test_short_comment_with_an_issue_reference_is_not_also_an_advisory_finding():
@@ -416,6 +469,32 @@ def test_yaml_description_block_scalar_with_a_leading_ordinal_is_not_flagged_as_
     violations = guard.find_yaml_issue_reference_violations(text)
 
     assert violations == []
+
+
+def test_docstring_with_an_issue_reference_is_blocked():
+    text = '"""\nfixes the flapping bug, see #91 for context\n"""\n'
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Docstring near line 1 contains an issue reference")
+    assert span == (1, 3)
+
+
+def test_yaml_description_block_with_an_issue_reference_is_blocked():
+    text = (
+        "description: >-\n"
+        "  see #91 for context on this default\n"
+        "next_key: value\n"
+    )
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Description block scalar near line 2 contains an issue reference")
+    assert span == (1, 2)
 
 
 def test_yaml_jinja_comment_with_an_issue_reference_is_blocked():
@@ -498,8 +577,10 @@ def test_unparseable_edit_fragment_with_oversize_docstring_is_still_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 42 lines")
+    assert span == (2, 43)
 
 
 def test_oversize_docstring_after_a_same_line_docstring_is_still_flagged():
@@ -514,8 +595,10 @@ def test_oversize_docstring_after_a_same_line_docstring_is_still_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (5, 26)
 
 
 def test_oversize_docstring_after_a_back_to_back_empty_docstring_is_still_flagged():
@@ -530,8 +613,10 @@ def test_oversize_docstring_after_a_back_to_back_empty_docstring_is_still_flagge
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (5, 26)
 
 
 def test_edit_fragment_starting_with_a_bare_closing_delimiter_is_not_flagged():
@@ -800,17 +885,24 @@ def test_oversize_leading_module_docstring_is_flagged_no_exemption():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (1, 22)
 
 
 def test_oversize_comment_run_is_flagged():
-    text = "\n".join(f"# reason line {i}" for i in range(5)) + "\n"
+    line_count = guard.COMMENT_RUN_LINE_THRESHOLD + 1
+    text = "\n".join(f"# reason line {i}" for i in range(line_count)) + "\n"
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("comment" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(f"Comment run of {line_count} '#' lines")
+    assert span == (1, line_count)
+
+
 
 
 def test_rename_phrasing_only_appears_for_comment_runs_not_docstrings():
@@ -826,6 +918,7 @@ def test_rename_phrasing_only_appears_for_comment_runs_not_docstrings():
 
 
 def test_comment_run_with_a_paragraph_break_is_still_flagged():
+    line_count = guard.COMMENT_RUN_LINE_THRESHOLD + 1
     text = (
         "# reason line 0\n"
         "# reason line 1\n"
@@ -837,8 +930,10 @@ def test_comment_run_with_a_paragraph_break_is_still_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("comment" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(f"Comment run of {line_count} '#' lines")
+    assert span == (1, 6)
 
 
 def test_comment_run_span_covers_a_paragraph_break_not_just_the_hash_lines():
@@ -890,6 +985,16 @@ def test_docstring_on_a_test_function_is_a_blocking_violation():
     assert guard.find_blocking_violations(source, "/repo/tests/test_thing.py")
 
 
+def test_docstring_on_a_test_function_violation_row_is_where_the_docstring_opens():
+    source = 'def test_thing():\n    """Checks the thing."""\n    assert True\n'
+
+    violations = guard.find_blocking_violations(source, "/repo/tests/test_thing.py")
+
+    message, span = next(v for v in violations if "opens with a docstring" in v[0])
+    assert message.startswith("BLOCKED - 'test_thing' near line 2 opens with a docstring")
+    assert span == (2, 2)
+
+
 def test_e2e_test_docstring_denies_the_edit():
     payload = {
         "tool_name": "Write",
@@ -918,7 +1023,10 @@ def test_external_id_in_a_module_docstring_is_a_blocking_violation():
 
     violations = guard.find_blocking_violations(source, "/repo/tests/test_gap.py")
 
-    assert any("MG-1" in v for v, _ in violations)
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'MG-1' in a docstring near line 1")
+    assert span == (1, 1)
 
 
 @pytest.mark.parametrize("standard", ["UTF-8", "SHA-256", "AES-256", "IPV-6"])
@@ -933,7 +1041,10 @@ def test_external_id_in_a_test_function_name_is_a_blocking_violation():
 
     violations = guard.find_blocking_violations(source, "/repo/tests/test_gap.py")
 
-    assert any("mg1" in v for v, _ in violations)
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'mg1' in a test name near line 1")
+    assert span == (1, 1)
 
 
 def test_external_id_in_the_filename_is_a_blocking_violation():
@@ -943,7 +1054,10 @@ def test_external_id_in_the_filename_is_a_blocking_violation():
         source, "/repo/tests/templates/test_desired_panel_setpoint_sp6.py"
     )
 
-    assert any("sp6" in v for v, _ in violations)
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'sp6' in the filename near line 1")
+    assert span == (1, 1)
 
 
 def test_standards_token_in_the_filename_is_not_an_external_id():
@@ -1102,7 +1216,9 @@ def test_yaml_five_line_hash_run_is_flagged():
 
     findings = guard.find_yaml_findings(text)
 
-    assert any("Comment run of 5" in f for f, _ in findings)
+    message, span = next(f for f in findings if f[0].startswith("Comment run"))
+    assert message.startswith("Comment run of 5 '#' lines")
+    assert span == (1, 5)
 
 
 def test_yaml_trailing_comment_with_evidence_marker_is_flagged():
@@ -1110,7 +1226,10 @@ def test_yaml_trailing_comment_with_evidence_marker_is_flagged():
 
     findings = guard.find_yaml_findings(text)
 
-    assert any("date" in f.lower() for f, _ in findings)
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_yaml_hash_immediately_after_a_digit_is_a_literal_scalar_not_a_comment():
@@ -1162,8 +1281,53 @@ def test_yaml_jinja_block_span_covers_the_opening_and_closing_markers():
 
     findings = guard.find_yaml_findings(text)
 
-    _, span = next(f for f in findings if "Jinja" in f[0] and "block" in f[0])
+    message, span = next(f for f in findings if "Jinja" in f[0] and "block" in f[0])
+    assert message.startswith(
+        f"Jinja '{{# #}}' block spans {body_line_count + 2} lines "
+        f"(over the {guard.JINJA_BLOCK_LINE_THRESHOLD}-line threshold) "
+        "starting near line 2"
+    )
     assert span == (2, body_line_count + 3)
+
+
+def test_find_jinja_findings_flags_an_oversize_standalone_jinja_comment_block():
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD + 1
+    body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
+    text = f"{{#\n{body_lines}\n#}}\n{{{{ value }}}}\n"
+
+    findings = guard.find_jinja_findings(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(
+        f"Jinja '{{# #}}' block spans {body_line_count + 2} lines "
+        f"(over the {guard.JINJA_BLOCK_LINE_THRESHOLD}-line threshold) "
+        "starting near line 1"
+    )
+    assert span == (1, body_line_count + 2)
+
+
+def test_find_jinja_findings_is_empty_for_a_short_standalone_jinja_comment():
+    text = "{# guards against the hold flipping mid-cycle #}\n{{ value }}\n"
+
+    assert guard.find_jinja_findings(text) == []
+
+
+def test_find_jinja_issue_reference_violations_blocks_a_standalone_comment_with_an_issue_reference():
+    text = "{# issue #91: the direction can flip while the hold is active #}\n"
+
+    violations = guard.find_jinja_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Jinja comment block near line 1 contains an issue reference")
+    assert span == (1, 1)
+
+
+def test_find_jinja_issue_reference_violations_is_empty_for_a_standalone_comment_with_no_issue_reference():
+    text = "{# guards against the hold flipping mid-cycle #}\n"
+
+    assert guard.find_jinja_issue_reference_violations(text) == []
 
 
 def test_yaml_jinja_comment_block_of_8_lines_or_fewer_is_not_flagged():
@@ -1272,6 +1436,28 @@ def test_yaml_long_commented_out_config_run_gets_the_dead_config_message():
 
     assert any("dead config" in f.lower() for f, _ in findings)
     assert not any("design doc" in f for f, _ in findings)
+
+
+def test_yaml_dead_config_finding_span_is_exact():
+    text = (
+        "# sensor:\n"
+        "#   - platform: template\n"
+        "#     sensors:\n"
+        "#       old_pool_temp:\n"
+        '#         value_template: "{{ states(\'sensor.pool_raw\') }}"\n'
+        "key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    message, span = next(f for f in findings if "dead config" in f[0].lower())
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    assert message.startswith(
+        f"Comment run of {over_threshold_line_count} '#' lines "
+        f"(over the {guard.YAML_COMMENT_RUN_LINE_THRESHOLD}-line threshold) "
+        "starting near line 1 reads as commented-out YAML"
+    )
+    assert span == (1, 5)
 
 
 def test_yaml_dead_config_message_does_not_claim_the_lines_are_consecutive():
@@ -1510,6 +1696,18 @@ def test_yaml_escaped_double_quote_does_not_prematurely_close_the_string():
     assert findings == []
 
 
+def test_hash_after_an_escaped_quote_inside_a_double_quoted_value_is_not_a_comment():
+    line = 'k: "a\\" # b"  # c'
+
+    assert guard._yaml_comment_start(line) == line.rindex("#")
+
+
+def test_hash_after_a_double_backslash_inside_a_double_quoted_value_is_a_comment():
+    line = 'k: "a\\\\" # c'
+
+    assert guard._yaml_comment_start(line) == line.index("#")
+
+
 def test_yaml_apostrophe_in_a_plain_scalar_does_not_suppress_a_trailing_comment():
     text = "name: the neighbour's house  # fixed on 2026-05-22\n"
 
@@ -1586,6 +1784,86 @@ def test_added_line_numbers_warns_and_returns_none_when_git_is_not_on_path(capsy
 
     assert result is None
     assert "comment_intent_guard" in capsys.readouterr().err
+
+
+def test_finding_ending_before_the_added_lines_is_filtered_out():
+    assert guard._touches_added_lines((2, 3), {1}) is False
+
+
+def test_single_line_hunk_header_without_a_count_adds_exactly_one_line(tmp_path):
+    _init_git_repo(tmp_path)
+    yaml_file = tmp_path / "a.yaml"
+    yaml_file.write_text("old_key: value\n")
+    subprocess.run(["git", "add", "a.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    yaml_file.write_text("old_key: value\nnew_key: value\n")
+
+    added = guard._added_line_numbers("HEAD", str(yaml_file))
+
+    assert added == {2}
+
+
+def test_added_line_numbers_against_a_real_repo_returns_only_the_appended_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text("old_key: value\n")
+    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    yaml_file.write_text("old_key: value\nnew_key_one: value\nnew_key_two: value\n")
+
+    added = guard._added_line_numbers("HEAD", str(yaml_file))
+
+    assert added == {2, 3}
+
+
+def test_cli_main_in_process_exits_3_and_prints_the_blocking_message(tmp_path, capsys):
+    py_file = tmp_path / "jira123_fix.py"
+    py_file.write_text("VALUE = 1\n")
+
+    returncode = guard._cli_main(["--all", str(py_file)])
+
+    assert returncode == guard._EXIT_BRIGHT_LINE
+    assert "jira123" in capsys.readouterr().out
+
+
+def test_hook_main_in_process_denies_a_python_bright_line_violation(monkeypatch, capsys):
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "old_string": "pass\n",
+            "new_string": "# Issue #91's own branch point\npass\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_hook_main_in_process_advises_on_a_yaml_oversize_comment_run(monkeypatch, capsys):
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"# reason {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/zones.yaml",
+            "content": f"{prose_lines}\nkey: value\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
 
 
 def test_cli_base_mode_on_an_untracked_file_treats_everything_as_added(tmp_path):
@@ -1873,6 +2151,21 @@ def test_cli_still_reports_a_bright_line_violation_when_analysis_is_unavailable(
         returncode = guard._cli_main(["--all", str(py_file)])
 
     assert "jira123" in capsys.readouterr().out
+    assert returncode == 4
+
+
+def test_cli_still_reports_later_files_after_one_is_unanalyzable(tmp_path, capsys):
+    first = tmp_path / "jira100_first.py"
+    first.write_text("VALUE = 1\n")
+    second = tmp_path / "jira200_second.py"
+    second.write_text("VALUE = 2\n")
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        returncode = guard._cli_main(["--all", str(first), str(second)])
+
+    out = capsys.readouterr().out
+    assert "jira100" in out
+    assert "jira200" in out
     assert returncode == 4
 
 
