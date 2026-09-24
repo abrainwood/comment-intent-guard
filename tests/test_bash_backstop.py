@@ -363,7 +363,7 @@ def test_clean_line_appended_to_a_file_with_a_preexisting_advisory_produces_no_o
     assert result.stdout == ""
 
 
-def test_violating_line_appended_to_a_tracked_file_reports_only_the_new_finding(tmp_path):
+def test_violating_line_appended_to_a_tracked_file_reports_the_new_finding_without_echoing_the_date(tmp_path):
     _init_git_repo(tmp_path)
     tracked = _write(tmp_path, "pkg/tracked.py", "# fixed on 2026-05-22 after the incident\npass\n")
     subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
@@ -382,7 +382,7 @@ def test_violating_line_appended_to_a_tracked_file_reports_only_the_new_finding(
     output = json.loads(result.stdout)
     context = output["hookSpecificOutput"]["additionalContext"]
     assert context.count("date, measurement, or SHA") == 1
-    assert "2026-09-24" not in context  # the finding message doesn't echo the date itself
+    assert "2026-09-24" not in context
     assert "near line 3" in context
 
 
@@ -407,7 +407,7 @@ def test_51_sessions_evicts_the_oldest(tmp_path, monkeypatch, capsys):
     assert len(stamps) == module.guard.MAX_TRACKED_SESSIONS
 
 
-def test_partial_write_to_the_stamps_file_does_not_break_the_next_run(tmp_path):
+def test_partial_write_to_the_stamps_file_is_rewritten_as_valid_json_on_the_next_run(tmp_path):
     _init_git_repo(tmp_path)
     state_dir = tmp_path / "state"
     state_dir.mkdir()
@@ -420,8 +420,6 @@ def test_partial_write_to_the_stamps_file_does_not_break_the_next_run(tmp_path):
 
     assert result.returncode == 0
     assert result.stdout == ""
-    # A corrupt stamps file is recovered from, not left broken: the baseline
-    # call rewrites it as valid JSON, and a later write is reported normally.
     assert json.loads(stamps_path.read_text()) == {"session-a": pytest.approx(time.time(), abs=30)}
 
     target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
@@ -541,7 +539,7 @@ def test_import_of_comment_intent_guard_works_when_launched_from_an_unrelated_cw
         text=True,
         timeout=10,
         env=env,
-        cwd=str(tmp_path),  # a directory that does not contain comment_intent_guard.py
+        cwd=str(tmp_path),
     )
 
     assert result.returncode == 0
@@ -620,7 +618,7 @@ def test_backstop_reports_blocking_findings_from_an_unanalyzable_file(tmp_path, 
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
-    module._run()  # seeds the session baseline stamp
+    module._run()
     _touch_future(target)
 
     def _raise_unavailable(file_path, text):
@@ -679,7 +677,9 @@ def test_diff_failure_other_than_missing_head_is_warned(tmp_path, monkeypatch, c
     assert "index file corrupt" in capsys.readouterr().err
 
 
-def test_missing_session_id_still_tracks_a_baseline_stamp(tmp_path):
+def test_missing_session_id_still_tracks_a_baseline_stamp_and_stops_reporting_once_the_stamp_passes_the_mtime(
+    tmp_path,
+):
     _init_git_repo(tmp_path)
     payload = {"cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
@@ -691,8 +691,6 @@ def test_missing_session_id_still_tracks_a_baseline_stamp(tmp_path):
     assert first.returncode == 0
     assert "test_x" in json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
 
-    # Fast-forward every stamp past the touched-future mtime, deterministically
-    # simulating time passing rather than racing the real clock.
     stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
     stamps = json.loads(stamps_path.read_text())
     future_mtime = int(os.path.getmtime(target))
@@ -781,7 +779,7 @@ def test_candidate_missing_from_disk_warns_with_its_path(tmp_path, monkeypatch, 
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
-    module._run()  # baseline call establishes the mtime stamp
+    module._run()
 
     real_getmtime = module.os.path.getmtime
 

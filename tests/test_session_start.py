@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 _SCRIPT_PATH = Path(__file__).resolve().parent.parent / "hooks" / "session_start.py"
 
 
@@ -47,7 +49,7 @@ def test_session_start_seeds_a_stamp_for_the_session_id(tmp_path):
     stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
     stamps = json.loads(stamps_path.read_text())
     assert "session-a" in stamps
-    assert isinstance(stamps["session-a"], (int, float))
+    assert stamps["session-a"] == pytest.approx(time.time(), abs=30)
 
 
 def test_second_session_start_call_for_the_same_id_leaves_the_stamp_unchanged(tmp_path):
