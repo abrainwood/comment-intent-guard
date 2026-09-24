@@ -65,10 +65,10 @@ def test_declared_functions_exist_on_the_module():
     assert not missing, f"declared public functions missing from the module: {missing}"
 
 
-def test_declared_function_parameters_match_the_declared_arity():
-    for name, params in PUBLIC_FUNCTIONS.items():
-        actual = tuple(inspect.signature(getattr(guard, name)).parameters)
-        assert actual == params, f"{name} has parameters {actual}, declared as {params}"
+@pytest.mark.parametrize("name, params", list(PUBLIC_FUNCTIONS.items()), ids=list(PUBLIC_FUNCTIONS))
+def test_declared_function_parameters_match_the_declared_arity(name, params):
+    actual = tuple(inspect.signature(getattr(guard, name)).parameters)
+    assert actual == params
 
 
 def _shape_problems(findings):
