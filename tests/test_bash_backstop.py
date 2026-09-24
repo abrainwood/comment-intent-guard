@@ -379,3 +379,16 @@ def test_build_message_caps_by_byte_budget_even_under_40_findings():
 
     assert len(message.encode("utf-8")) <= module._MAX_MESSAGE_BYTES + trailer_note_headroom
     assert "more findings" in message
+
+
+def test_exactly_200_candidates_does_not_warn(tmp_path):
+    _init_git_repo(tmp_path)
+    for n in range(200):
+        _write(tmp_path, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n")
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    assert result.stderr == ""
