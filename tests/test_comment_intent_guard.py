@@ -337,8 +337,9 @@ def test_oversize_docstring_is_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 15 lines")
+    assert span == (1, 15)
 
 
 def test_docstring_span_covers_the_full_block_including_the_closing_delimiter():
@@ -383,8 +384,9 @@ def test_prefixed_oversize_docstring_is_flagged(prefix, quote):
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 15 lines")
+    assert span == (1, 15)
 
 
 def test_short_docstring_naming_a_test_case_is_not_flagged():
@@ -403,8 +405,9 @@ def test_short_comment_with_a_date_is_flagged_despite_being_under_threshold():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("date" in f.lower() or "measurement" in f.lower() or "sha" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_short_comment_with_a_measurement_is_flagged():
@@ -412,7 +415,9 @@ def test_short_comment_with_a_measurement_is_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_short_comment_with_a_sha_is_flagged():
@@ -420,7 +425,9 @@ def test_short_comment_with_a_sha_is_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_short_comment_with_a_plain_number_is_not_flagged_as_a_sha():
@@ -436,8 +443,9 @@ def test_trailing_comment_with_a_sha_is_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("sha" in f.lower() or "date" in f.lower() or "measurement" in f.lower() for f, _ in findings)
+    message, span = next(f for f in findings if f[0].startswith("Comment near line"))
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_trailing_hash_inside_a_string_literal_is_not_a_comment():
@@ -461,8 +469,9 @@ def test_short_comment_with_an_issue_reference_is_blocked():
 
     violations = guard.find_issue_reference_violations(text)
 
-    assert violations
-    assert any("BLOCKED" in v for v, _ in violations)
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Comment near line 1 contains an issue reference")
+    assert span == (1, 1)
 
 
 def test_trailing_python_comment_with_an_issue_reference_is_blocked_on_its_line():
@@ -602,8 +611,9 @@ def test_unparseable_edit_fragment_with_oversize_docstring_is_still_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 42 lines")
+    assert span == (2, 43)
 
 
 def test_oversize_docstring_after_a_same_line_docstring_is_still_flagged():
@@ -618,8 +628,9 @@ def test_oversize_docstring_after_a_same_line_docstring_is_still_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (5, 26)
 
 
 def test_oversize_docstring_after_a_back_to_back_empty_docstring_is_still_flagged():
@@ -634,8 +645,9 @@ def test_oversize_docstring_after_a_back_to_back_empty_docstring_is_still_flagge
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (5, 26)
 
 
 def test_edit_fragment_starting_with_a_bare_closing_delimiter_is_not_flagged():
@@ -904,8 +916,9 @@ def test_oversize_leading_module_docstring_is_flagged_no_exemption():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("docstring" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (1, 22)
 
 
 def test_oversize_comment_run_is_flagged():
@@ -913,8 +926,9 @@ def test_oversize_comment_run_is_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("comment" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Comment run of 5 '#' lines")
+    assert span == (1, 5)
 
 
 def test_oversize_comment_run_finding_span_is_exact():
@@ -959,8 +973,9 @@ def test_comment_run_with_a_paragraph_break_is_still_flagged():
 
     findings = guard.find_misplaced_rationale(text)
 
-    assert findings
-    assert any("comment" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Comment run of 5 '#' lines")
+    assert span == (1, 6)
 
 
 def test_comment_run_span_covers_a_paragraph_break_not_just_the_hash_lines():
@@ -1049,7 +1064,9 @@ def test_external_id_in_a_module_docstring_is_a_blocking_violation():
 
     violations = guard.find_blocking_violations(source, "/repo/tests/test_gap.py")
 
-    assert any("MG-1" in v for v, _ in violations)
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'MG-1' in a docstring near line 1")
+    assert span == (1, 1)
 
 
 @pytest.mark.parametrize("standard", ["UTF-8", "SHA-256", "AES-256", "IPV-6"])
@@ -1064,7 +1081,9 @@ def test_external_id_in_a_test_function_name_is_a_blocking_violation():
 
     violations = guard.find_blocking_violations(source, "/repo/tests/test_gap.py")
 
-    assert any("mg1" in v for v, _ in violations)
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'mg1' in a test name near line 1")
+    assert span == (1, 1)
 
 
 def test_external_id_in_the_filename_is_a_blocking_violation():
@@ -1074,7 +1093,9 @@ def test_external_id_in_the_filename_is_a_blocking_violation():
         source, "/repo/tests/templates/test_desired_panel_setpoint_sp6.py"
     )
 
-    assert any("sp6" in v for v, _ in violations)
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'sp6' in the filename near line 1")
+    assert span == (1, 1)
 
 
 def test_standards_token_in_the_filename_is_not_an_external_id():
@@ -1233,7 +1254,9 @@ def test_yaml_five_line_hash_run_is_flagged():
 
     findings = guard.find_yaml_findings(text)
 
-    assert any("Comment run of 5" in f for f, _ in findings)
+    message, span = next(f for f in findings if f[0].startswith("Comment run"))
+    assert message.startswith("Comment run of 5 '#' lines")
+    assert span == (1, 5)
 
 
 def test_yaml_trailing_comment_with_evidence_marker_is_flagged():
@@ -1241,7 +1264,9 @@ def test_yaml_trailing_comment_with_evidence_marker_is_flagged():
 
     findings = guard.find_yaml_findings(text)
 
-    assert any("date" in f.lower() for f, _ in findings)
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
 
 
 def test_yaml_hash_immediately_after_a_digit_is_a_literal_scalar_not_a_comment():
