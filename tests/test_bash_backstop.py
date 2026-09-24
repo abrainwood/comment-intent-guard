@@ -519,14 +519,14 @@ def test_git_call_count_stays_constant_regardless_of_candidate_count(tmp_path, m
 
     module._run()
 
-    assert call_count == 3
+    assert call_count == 4
 
 
 def test_diff_against_missing_head_stays_silent(tmp_path, capsys):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     module = _import_bash_backstop()
 
-    result = module._tracked_diff_added_lines(str(tmp_path))
+    result = module._tracked_diff_added_lines(str(tmp_path), set())
 
     assert result == {}
     assert capsys.readouterr().err == ""
@@ -541,7 +541,7 @@ def test_diff_failure_other_than_missing_head_is_warned(tmp_path, monkeypatch, c
 
     monkeypatch.setattr(module.subprocess, "run", _fake_run)
 
-    result = module._tracked_diff_added_lines(str(tmp_path))
+    result = module._tracked_diff_added_lines(str(tmp_path), set())
 
     assert result == {}
     assert "index file corrupt" in capsys.readouterr().err
@@ -588,3 +588,50 @@ def test_heredoc_written_yaml_with_an_issue_reference_is_reported_as_a_bright_li
     context = output["hookSpecificOutput"]["additionalContext"]
     assert "BRIGHT LINE" in context
     assert "thing.yaml" in context
+
+
+def test_tracked_file_with_a_space_in_its_name_is_reported(tmp_path):
+    _init_git_repo(tmp_path)
+    target = _write(tmp_path, "pkg/my file.py", "pass\n")
+    subprocess.run(["git", "add", "pkg/my file.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add spaced file"], cwd=tmp_path, check=True)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    with target.open("a") as handle:
+        handle.write("# updated on 2026-09-24 with a fix (issue #482)\nVALUE = 1\n")
+    _touch_future(target)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "my file.py" in context
+    assert "BRIGHT LINE" in context
+
+
+def test_added_line_starting_with_plus_plus_does_not_break_a_later_hunk(tmp_path):
+    _init_git_repo(tmp_path)
+    original = "\n".join(f"line_{n} = {n}" for n in range(1, 11)) + "\n"
+    target = _write(tmp_path, "pkg/tracked.py", original)
+    subprocess.run(["git", "add", "pkg/tracked.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add tracked"], cwd=tmp_path, check=True)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    assert _run(payload, env).stdout == ""
+
+    lines = [f"line_{n} = {n}" for n in range(1, 11)]
+    lines.insert(1, "++ this looks like a diff header but is not")
+    lines.append("# updated on 2026-09-24 with a fix")
+    target.write_text("\n".join(lines) + "\n")
+    _touch_future(target)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "tracked.py" in context
+    assert "date, measurement, or SHA" in context

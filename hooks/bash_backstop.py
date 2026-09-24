@@ -85,15 +85,35 @@ def _git_paths(repo_root, args):
     return [entry for entry in result.stdout.split("\0") if entry]
 
 
-def _parse_diff_added_lines(diff_output):
+def _unquote_git_header_path(raw):
+    # A path with a space gets a trailing tab (git's own disambiguation);
+    # a path with control characters gets wrapped in C-quotes instead.
+    raw = raw.removesuffix("\t")
+    if raw.startswith('"') and raw.endswith('"'):
+        try:
+            raw = raw[1:-1].encode("latin1").decode("unicode_escape").encode("latin1").decode("utf-8")
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            pass
+    return raw
+
+
+def _parse_diff_added_lines(diff_output, known_relpaths):
     added_by_relpath = {}
     current_relpath = None
+    in_hunks = False
     for line in diff_output.splitlines():
-        if line.startswith("+++ "):
-            path_part = line[len("+++ "):]
+        if line.startswith("diff --git "):
+            in_hunks = False
+            current_relpath = None
+            continue
+        if not in_hunks and line.startswith("+++ "):
+            path_part = _unquote_git_header_path(line[len("+++ "):])
             current_relpath = None if path_part == "/dev/null" else path_part.removeprefix("b/")
-            if current_relpath is not None:
+            if current_relpath in known_relpaths:
                 added_by_relpath.setdefault(current_relpath, set())
+            else:
+                current_relpath = None
+            in_hunks = True
             continue
         match = guard._HUNK_HEADER_RE.match(line)
         if match is not None and current_relpath is not None:
@@ -103,7 +123,7 @@ def _parse_diff_added_lines(diff_output):
     return added_by_relpath
 
 
-def _tracked_diff_added_lines(repo_root):
+def _tracked_diff_added_lines(repo_root, known_relpaths):
     try:
         result = subprocess.run(
             ["git", "-C", repo_root, "-c", "core.quotePath=false", "diff", "-U0", "--no-color", "-z",
@@ -120,13 +140,14 @@ def _tracked_diff_added_lines(repo_root):
                 prefix="bash_backstop",
             )
         return {}
-    return _parse_diff_added_lines(result.stdout)
+    return _parse_diff_added_lines(result.stdout, known_relpaths)
 
 
 def _candidate_files(repo_root):
-    added_by_relpath = _tracked_diff_added_lines(repo_root)
+    tracked = set(_git_paths(repo_root, ["diff", "--name-only", "--diff-filter=d", "--ignore-submodules", "HEAD"]))
     untracked = _git_paths(repo_root, ["ls-files", "--others", "--exclude-standard"])
-    relpaths = sorted(set(added_by_relpath) | set(untracked))
+    added_by_relpath = _tracked_diff_added_lines(repo_root, tracked)
+    relpaths = sorted(tracked | set(untracked))
     candidates = [os.path.join(repo_root, relpath) for relpath in relpaths]
     return candidates, added_by_relpath
 
