@@ -7,7 +7,7 @@
     {
       "name": "comment-intent-guard",
       "source": "./",
-      "description": "Denies rationale written into source comments - test docstrings, ticket ids, dates, SHAs - at Write/Edit time, and advises on the rest. Python, YAML, Jinja."
+      "description": "Denies rationale written into source comments - test docstrings, ticket ids, dates, SHAs - at Write/Edit time, and advises on the rest. Python, YAML, Jinja, C#."
     }
   ]
 }

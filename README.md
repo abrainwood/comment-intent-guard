@@ -3,8 +3,8 @@
 A Claude Code plugin that flags rationale written into source comments -
 dates, measurements, commit SHAs, issue references, oversize docstrings and
 comment runs - that belongs in the issue, PR, or design doc instead. Some
-findings are advisory; a few are bright-line denials. Python, YAML, and
-Jinja.
+findings are advisory; a few are bright-line denials. Python, YAML, Jinja,
+and C#.
 
 ## Install
 
@@ -78,9 +78,10 @@ comment_intent_guard.py --base <git-ref> <files...>
 ## Bright lines and advisory findings
 
 Bright lines (deny/block): an issue reference (`#123`) in a comment,
-docstring, or YAML/Jinja comment block; a docstring on a test function; an
-external id (`SP-9`-style in a docstring, `sp1`-style in a filename or test
-name) not covered by the repo's allowlist.
+docstring, or YAML/Jinja/C# comment block; a docstring (or C# `///` XML doc
+comment) on a test function/method; an external id (`SP-9`-style in a
+docstring, `sp1`-style in a filename or test name) not covered by the
+repo's allowlist.
 
 Advisory (surfaced, never blocks): a date, measurement, or SHA in a comment
 or docstring; a docstring over the 12-line threshold; a comment run over 4

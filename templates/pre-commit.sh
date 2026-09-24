@@ -91,7 +91,7 @@ fi
 staged=()
 while IFS= read -r -d '' file; do
   staged+=("$file")
-done < <(git diff --cached -z --name-only --diff-filter=ACMR -- '*.py' '*.yaml' '*.yml' '*.jinja' '*.j2')
+done < <(git diff --cached -z --name-only --diff-filter=ACMR -- '*.py' '*.yaml' '*.yml' '*.jinja' '*.j2' '*.cs')
 if [ "${#staged[@]}" -eq 0 ]; then
   exit 0
 fi

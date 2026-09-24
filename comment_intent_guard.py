@@ -556,6 +556,243 @@ def find_blocking_violations(text, file_path):
     return violations
 
 
+def _csharp_comment_spans(text):
+    spans = []
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "@" and i + 1 < n and text[i + 1] == '"':
+            i = _csharp_skip_verbatim_string(text, i + 1)
+            continue
+        if ch == "@" and i + 2 < n and text[i + 1] == "$" and text[i + 2] == '"':
+            i = _csharp_skip_verbatim_string(text, i + 2)
+            continue
+        if ch == '"':
+            quote_run = 1
+            while i + quote_run < n and text[i + quote_run] == '"':
+                quote_run += 1
+            if quote_run >= 3:
+                i = _csharp_skip_raw_string(text, i, quote_run)
+            else:
+                i = _csharp_skip_string(text, i)
+            continue
+        if ch == "'":
+            i = _csharp_skip_char_literal(text, i)
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            is_doc = i + 2 < n and text[i + 2] == "/"
+            marker_len = 3 if is_doc else 2
+            li = text.count("\n", 0, i)
+            eol = text.find("\n", i)
+            eol = n if eol == -1 else eol
+            kind = "doc" if is_doc else "line"
+            content = text[i + marker_len:eol]
+            if is_doc and spans and spans[-1][0] == "doc" and spans[-1][2] + 1 == li:
+                prev_kind, prev_start, _prev_end, prev_content = spans[-1]
+                spans[-1] = (prev_kind, prev_start, li, f"{prev_content}\n{content}")
+            else:
+                spans.append((kind, li, li, content))
+            i = eol
+            continue
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            start_li = text.count("\n", 0, i)
+            close = text.find("*/", i + 2)
+            end = n if close == -1 else close
+            end_li = start_li + text.count("\n", i, end)
+            spans.append(("block", start_li, end_li, text[i + 2:end]))
+            i = n if close == -1 else close + 2
+            continue
+        i += 1
+    return spans
+
+
+def _scan_csharp_comments(text):
+    lines = _split_rows(text)
+    findings = []
+    blocking = []
+    run_start = None
+    run_end = None
+    run_lines = []
+
+    for kind, start_li, end_li, content in _csharp_comment_spans(text):
+        if kind == "line" and lines[start_li][:lines[start_li].find("//")].strip() == "":
+            if run_start is not None and start_li == run_end + 1:
+                run_end = end_li
+                run_lines.append(content)
+            else:
+                run_start, run_end, run_lines = _flush_csharp_comment_run(
+                    findings, blocking, run_start, run_end, run_lines
+                )
+                run_start, run_end, run_lines = start_li, end_li, [content]
+            continue
+
+        run_start, run_end, run_lines = _flush_csharp_comment_run(findings, blocking, run_start, run_end, run_lines)
+
+        span = (start_li + 1, end_li + 1)
+        block_len = end_li - start_li + 1
+        if kind == "doc" and block_len > DOCSTRING_LINE_THRESHOLD:
+            findings.append((
+                f"XML doc comment spans {block_len} lines (over the "
+                f"{DOCSTRING_LINE_THRESHOLD}-line threshold) starting near "
+                f"line {start_li + 1}. Does this belong in the design doc or "
+                "the issue/PR instead of source?",
+                span,
+            ))
+        if _has_evidence_marker(content):
+            findings.append((_evidence_finding("Comment", start_li), span))
+        if _has_inline_issue_reference(content):
+            blocking.append((_issue_reference_violation("Comment", start_li), span))
+
+    run_start, run_end, run_lines = _flush_csharp_comment_run(findings, blocking, run_start, run_end, run_lines)
+    return blocking, findings
+
+
+_CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Fact", "Theory", "Test", "TestCase", "TestMethod"})
+_CSHARP_ATTRIBUTE_NAME_RE = re.compile(r"[\[,]\s*([A-Za-z_][A-Za-z0-9_]*)")
+_CSHARP_METHOD_NAME_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+
+
+def _is_csharp_test_attribute(name):
+    return name in _CSHARP_TEST_ATTRIBUTE_NAMES or name.removesuffix("Attribute") in _CSHARP_TEST_ATTRIBUTE_NAMES
+
+
+def _csharp_line_attribute_names(line):
+    return _CSHARP_ATTRIBUTE_NAME_RE.findall(line) if line.strip().startswith("[") else None
+
+
+def _csharp_test_method_after_doc_block(lines, end_li):
+    li = end_li + 1
+    saw_test_attribute = False
+    while li < len(lines):
+        names = _csharp_line_attribute_names(lines[li])
+        if names is None:
+            break
+        saw_test_attribute = saw_test_attribute or any(_is_csharp_test_attribute(n) for n in names)
+        li += 1
+    if not saw_test_attribute or li >= len(lines):
+        return None
+    match = _CSHARP_METHOD_NAME_RE.search(lines[li])
+    return (match.group(1), li + 1) if match else None
+
+
+def _csharp_test_doc_blocking_violations(text):
+    lines = _split_rows(text)
+    violations = []
+    for kind, _start_li, end_li, _content in _csharp_comment_spans(text):
+        if kind != "doc":
+            continue
+        found = _csharp_test_method_after_doc_block(lines, end_li)
+        if found is not None:
+            name, row = found
+            violations.append((_test_docstring_violation(name, row), (row, row)))
+    return violations
+
+
+def _csharp_external_id_blocking_violations(text, allowed_prefixes):
+    violations = []
+    for kind, start_li, end_li, content in _csharp_comment_spans(text):
+        if kind != "doc":
+            continue
+        violations.extend(
+            (_external_id_violation(found, "an XML doc comment", start_li + 1), (start_li + 1, end_li + 1))
+            for found in _external_ids_in(content, allowed_prefixes)
+        )
+    return violations
+
+
+def find_csharp_blocking_violations(text, file_path):
+    allowed_prefixes = _repo_id_prefix_allowlist(file_path)
+    return (
+        _csharp_test_doc_blocking_violations(text)
+        + _csharp_external_id_blocking_violations(text, allowed_prefixes)
+    )
+
+
+def find_csharp_findings(text):
+    _, findings = _scan_csharp_comments(text)
+    return findings
+
+
+def find_csharp_issue_reference_violations(text):
+    blocking, _ = _scan_csharp_comments(text)
+    return blocking
+
+
+def _flush_csharp_comment_run(findings, blocking, run_start, run_end, run_lines):
+    if run_start is not None:
+        run_len = len(run_lines)
+        span = (run_start + 1, run_end + 1)
+        if run_len > COMMENT_RUN_LINE_THRESHOLD:
+            findings.append((
+                f"Comment run of {run_len} '//' lines (over the "
+                f"{COMMENT_RUN_LINE_THRESHOLD}-line threshold) starting near "
+                f"line {run_start + 1}. Does this belong in the design doc or "
+                "the issue/PR instead of source - or could a rename carry the "
+                "meaning instead?",
+                span,
+            ))
+        run_text = "\n".join(run_lines)
+        if _has_evidence_marker(run_text):
+            findings.append((_evidence_finding("Comment", run_start), span))
+        if _has_inline_issue_reference(run_text):
+            blocking.append((_issue_reference_violation("Comment", run_start), span))
+    return None, None, []
+
+
+def _csharp_skip_char_literal(text, start):
+    i = start + 1
+    n = len(text)
+    if i < n and text[i] == "\\" and i + 1 < n:
+        i += 2
+    elif i < n:
+        i += 1
+    if i < n and text[i] == "'":
+        return i + 1
+    return start + 1
+
+
+def _csharp_skip_raw_string(text, start, quote_run):
+    i = start + quote_run
+    n = len(text)
+    while i < n:
+        if text[i] == '"':
+            close_run = 1
+            while i + close_run < n and text[i + close_run] == '"':
+                close_run += 1
+            if close_run >= quote_run:
+                return i + close_run
+            i += close_run
+            continue
+        i += 1
+    return i
+
+
+def _csharp_skip_verbatim_string(text, quote_index):
+    i = quote_index + 1
+    n = len(text)
+    while i < n:
+        if text[i] == '"':
+            if i + 1 < n and text[i + 1] == '"':
+                i += 2
+                continue
+            return i + 1
+        i += 1
+    return i
+
+
+def _csharp_skip_string(text, start):
+    i = start + 1
+    n = len(text)
+    while i < n:
+        if text[i] == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if text[i] == '"':
+            return i + 1
+        i += 1
+    return i
+
+
 YAML_COMMENT_RUN_LINE_THRESHOLD = 4
 
 
@@ -944,6 +1181,9 @@ def _findings_for_file(file_path, text):
         return find_yaml_issue_reference_violations(text), find_yaml_findings(text)
     if file_path.endswith((".jinja", ".j2")):
         return find_jinja_issue_reference_violations(text), find_jinja_findings(text)
+    if file_path.endswith(".cs"):
+        blocking = find_csharp_blocking_violations(text, file_path) + find_csharp_issue_reference_violations(text)
+        return blocking, find_csharp_findings(text)
     return [], []
 
 
@@ -1062,7 +1302,7 @@ def _cli_main(argv):
     return _check_files(args.files, base=args.base)
 
 
-_SCAN_PATHSPECS = ("*.py", "*.yaml", "*.yml", "*.jinja", "*.j2")
+_SCAN_PATHSPECS = ("*.py", "*.yaml", "*.yml", "*.jinja", "*.j2", "*.cs")
 
 
 class _ScanGitError(Exception):
@@ -1186,7 +1426,8 @@ def _hook_main():
         is_python = file_path.endswith(".py")
         is_yaml = file_path.endswith((".yaml", ".yml"))
         is_jinja = file_path.endswith((".jinja", ".j2"))
-        if not (is_python or is_yaml or is_jinja):
+        is_csharp = file_path.endswith(".cs")
+        if not (is_python or is_yaml or is_jinja or is_csharp):
             return
 
         text = _extract_added_text(tool_name, tool_input)
@@ -1200,6 +1441,19 @@ def _hook_main():
                 return
 
             findings = [message for message, _ in find_jinja_findings(text)]
+        elif is_csharp:
+            violations = [message for message, _ in find_csharp_blocking_violations(text, file_path)]
+            if violations:
+                print(json.dumps(_deny_payload(violations)))
+                return
+
+            issue_blocking, advisory_pairs = _scan_csharp_comments(text)
+            violations = [message for message, _ in issue_blocking]
+            if violations:
+                print(json.dumps(_deny_payload(violations)))
+                return
+
+            findings = [message for message, _ in advisory_pairs]
         elif is_python:
             violations = [message for message, _ in find_blocking_violations(text, file_path)]
             if violations:
