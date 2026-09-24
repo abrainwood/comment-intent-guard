@@ -112,6 +112,34 @@ def test_doc_comment_before_a_test_attribute_among_other_attributes_is_blocked()
     assert any("no caller" in message for message, _ in violations)
 
 
+def test_doc_comment_before_a_same_line_attribute_and_signature_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert any("ChecksTheThing" in message and "no caller" in message for message, _ in violations)
+
+
+def test_doc_comment_before_a_same_line_attribute_does_not_misattribute_the_body():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] public void ChecksTheThing()\n"
+        "{\n"
+        "    Assert.Equal(1, 1);\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert not any("Equal" in message for message, _ in violations)
+    assert any("ChecksTheThing" in message for message, _ in violations)
+
+
 def test_external_id_in_a_doc_comment_block_is_a_blocking_violation():
     text = "/// Fixes JIRA-4821 for real this time.\npublic void DoesAThing()\n{\n}\n"
 

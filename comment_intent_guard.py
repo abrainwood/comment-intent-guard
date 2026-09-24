@@ -647,28 +647,36 @@ def _scan_csharp_comment_spans(spans, lines):
 _CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Fact", "Theory", "Test", "TestCase", "TestMethod"})
 _CSHARP_ATTRIBUTE_NAME_RE = re.compile(r"[\[,]\s*([A-Za-z_][A-Za-z0-9_]*)")
 _CSHARP_METHOD_NAME_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(")
+_CSHARP_ATTR_LINE_RE = re.compile(r"^\s*((?:\[[^\]]*\]\s*)+)(.*)$")
 
 
 def _is_csharp_test_attribute(name):
     return name in _CSHARP_TEST_ATTRIBUTE_NAMES or name.removesuffix("Attribute") in _CSHARP_TEST_ATTRIBUTE_NAMES
 
 
-def _csharp_line_attribute_names(line):
-    return _CSHARP_ATTRIBUTE_NAME_RE.findall(line) if line.strip().startswith("[") else None
+def _csharp_line_attribute_group(line):
+    match = _CSHARP_ATTR_LINE_RE.match(line)
+    return (match.group(1), match.group(2)) if match else None
 
 
 def _csharp_test_method_after_doc_block(lines, end_li):
     li = end_li + 1
     saw_test_attribute = False
     while li < len(lines):
-        names = _csharp_line_attribute_names(lines[li])
-        if names is None:
+        group = _csharp_line_attribute_group(lines[li])
+        if group is None:
             break
+        attrs_text, remainder = group
+        names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
         saw_test_attribute = saw_test_attribute or any(_is_csharp_test_attribute(n) for n in names)
+        if remainder.strip():
+            break
         li += 1
     if not saw_test_attribute or li >= len(lines):
         return None
-    match = _CSHARP_METHOD_NAME_RE.search(lines[li])
+    group = _csharp_line_attribute_group(lines[li])
+    search_text = group[1] if group is not None else lines[li]
+    match = _CSHARP_METHOD_NAME_RE.search(search_text)
     return (match.group(1), li + 1) if match else None
 
 
