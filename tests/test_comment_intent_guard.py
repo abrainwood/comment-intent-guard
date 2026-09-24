@@ -288,6 +288,16 @@ def test_version_guard_raises_analysis_unavailable_below_python_3_12():
             guard.find_misplaced_rationale(text)
 
 
+def test_docstring_of_exactly_the_threshold_line_count_is_not_flagged():
+    body_line_count = guard.DOCSTRING_LINE_THRESHOLD - 2
+    lines = "\n".join(f"    reason {i}" for i in range(body_line_count))
+    text = f'"""\n{lines}\n"""\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert not any(f.startswith("Docstring spans") for f, _ in findings)
+
+
 def test_oversize_docstring_is_flagged():
     body_line_count = guard.DOCSTRING_LINE_THRESHOLD + 1
     lines = "\n".join(f"    reason {i}" for i in range(body_line_count))
@@ -891,6 +901,15 @@ def test_oversize_leading_module_docstring_is_flagged_no_exemption():
     assert span == (1, 22)
 
 
+def test_comment_run_of_exactly_the_threshold_line_count_is_not_flagged():
+    line_count = guard.COMMENT_RUN_LINE_THRESHOLD
+    text = "\n".join(f"# reason line {i}" for i in range(line_count)) + "\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert not any(f.startswith("Comment run of") for f, _ in findings)
+
+
 def test_oversize_comment_run_is_flagged():
     line_count = guard.COMMENT_RUN_LINE_THRESHOLD + 1
     text = "\n".join(f"# reason line {i}" for i in range(line_count)) + "\n"
@@ -1290,6 +1309,16 @@ def test_yaml_jinja_block_span_covers_the_opening_and_closing_markers():
     assert span == (2, body_line_count + 3)
 
 
+def test_jinja_comment_block_of_exactly_the_threshold_line_count_is_not_flagged():
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD - 2
+    body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
+    text = f"{{#\n{body_lines}\n#}}\n{{{{ value }}}}\n"
+
+    findings = guard.find_jinja_findings(text)
+
+    assert not any(f.startswith("Jinja '{# #}' block spans") for f, _ in findings)
+
+
 def test_find_jinja_findings_flags_an_oversize_standalone_jinja_comment_block():
     body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD + 1
     body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
@@ -1610,7 +1639,7 @@ def test_yaml_whole_line_comment_with_evidence_marker_is_flagged_below_run_thres
 
     findings = guard.find_yaml_findings(text)
 
-    assert any("date" in f.lower() for f, _ in findings)
+    assert findings == [(guard._evidence_finding("Comment", 0), (1, 1))]
 
 
 def test_yaml_block_scalar_with_an_explicit_indentation_indicator_is_still_inert():
@@ -1708,12 +1737,43 @@ def test_hash_after_a_double_backslash_inside_a_double_quoted_value_is_a_comment
     assert guard._yaml_comment_start(line) == line.index("#")
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param('k: "it\'s # x"  # c', id="apostrophe_inside_double_quoted_value"),
+        pytest.param('"a # b" # c', id="double_quote_opens_at_column_zero"),
+        pytest.param("'a # b' # c", id="single_quote_opens_at_column_zero"),
+        pytest.param('k: value # comment "quoted" text', id="quote_after_the_comment_hash"),
+    ],
+)
+def test_yaml_comment_start_finds_the_real_hash(line):
+    assert guard._yaml_comment_start(line) == line.rindex("#")
+
+
+def test_yaml_comment_start_returns_none_for_an_unterminated_double_quote():
+    line = 'k: "unterminated # not a comment'
+
+    assert guard._yaml_comment_start(line) is None
+
+
+def test_closes_double_quote_treats_a_lone_leading_backslash_as_an_escape():
+    line = '\\"'
+
+    assert guard._closes_double_quote(line, 1) is False
+
+
+def test_closes_double_quote_treats_an_even_backslash_run_as_a_real_close():
+    line = '\\\\"'
+
+    assert guard._closes_double_quote(line, 2) is True
+
+
 def test_yaml_apostrophe_in_a_plain_scalar_does_not_suppress_a_trailing_comment():
     text = "name: the neighbour's house  # fixed on 2026-05-22\n"
 
     findings = guard.find_yaml_findings(text)
 
-    assert any("date" in f.lower() for f, _ in findings)
+    assert findings == [(guard._evidence_finding("Comment", 0), (1, 1))]
 
 
 def test_yaml_explanatory_prose_run_is_not_misclassified_as_dead_config():
@@ -1864,6 +1924,101 @@ def test_hook_main_in_process_advises_on_a_yaml_oversize_comment_run(monkeypatch
     output = json.loads(capsys.readouterr().out)
     assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
     assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"tool_name": "Read", "tool_input": {"file_path": "/repo/thing.py", "content": "x\n"}},
+                     id="non_write_or_edit_tool_is_ignored"),
+        pytest.param({"tool_name": "Write", "tool_input": "not a dict"}, id="tool_input_not_a_dict_is_ignored"),
+        pytest.param({"tool_name": "Write"}, id="missing_tool_input_is_ignored"),
+        pytest.param({"tool_name": "Write", "tool_input": {"content": "x\n"}}, id="missing_file_path_is_ignored"),
+        pytest.param(
+            {"tool_name": "Write", "tool_input": {"file_path": 5, "content": "x\n"}},
+            id="non_string_file_path_is_ignored",
+        ),
+        pytest.param(
+            {"tool_name": "Write", "tool_input": {"file_path": "/repo/notes.txt", "content": "x\n"}},
+            id="unsupported_extension_is_ignored",
+        ),
+        pytest.param(
+            {"tool_name": "Write", "tool_input": {"file_path": "/repo/thing.py"}},
+            id="missing_content_is_ignored",
+        ),
+        pytest.param(
+            {"tool_name": "Read", "tool_input": {"file_path": "/repo/thing.py"}},
+            id="wrong_tool_name_yields_no_added_text",
+        ),
+    ],
+)
+def test_hook_main_routing_cases_produce_no_output(monkeypatch, capsys, payload):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_main_on_malformed_json_stdin_prints_to_stderr_and_produces_no_stdout(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+
+    guard._hook_main()
+
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "comment_intent_guard:" in out.err
+
+
+def test_hook_main_denies_a_csharp_issue_reference_violation(monkeypatch, capsys):
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/src/Thing.cs",
+            "content": "int x = 1; // see #123 for context\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_hook_main_denies_a_jinja_issue_reference_violation(monkeypatch, capsys):
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/templates/thing.j2",
+            "content": "{# see #123 for context #}\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_hook_main_advises_on_a_csharp_evidence_marker(monkeypatch, capsys):
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/src/Thing.cs",
+            "content": "int x = 1; // fixed on 2026-01-05\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert "date, measurement, or SHA" in output["hookSpecificOutput"]["additionalContext"]
 
 
 def test_cli_base_mode_on_an_untracked_file_treats_everything_as_added(tmp_path):
