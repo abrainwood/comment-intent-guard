@@ -3,7 +3,7 @@ name: comment-guard-init
 description: Wire the comment-intent guard into the current repo (pre-commit hook, CI gate, config, CLAUDE.md stanza). Use when the user asks to set up, install, or init the comment-intent guard in this repo, or invokes /comment-guard-init.
 ---
 
-Run `bash ${CLAUDE_PLUGIN_ROOT}/init.sh` from the repository root.
+Run `comment-intent-guard init` from the repository root.
 
 The script is idempotent: running it again after it already succeeded changes
 nothing and exits 0. It refuses (non-zero exit, nothing written) if

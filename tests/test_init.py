@@ -172,6 +172,36 @@ def test_claude_md_append_separates_with_a_newline_when_file_lacks_trailing_newl
     assert "here\n\n<!-- comment-intent-guard:comment-guard-init -->" in content
 
 
+_BIN_WRAPPER = _REPO_ROOT / "bin" / "comment-intent-guard"
+
+
+def test_bin_wrapper_init_behaves_like_init_sh(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "init"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert (tmp_path / ".comment-intent-guard.json").exists()
+    assert (tmp_path / ".githooks" / "pre-commit").exists()
+    assert (tmp_path / ".github" / "workflows" / "comment-guard.yml").exists()
+    assert (tmp_path / "CLAUDE.md").exists()
+
+
+def test_bin_wrapper_check_exits_3_on_a_violating_file(tmp_path):
+    violating = tmp_path / "bad.py"
+    violating.write_text('def test_x():\n    """a docstring"""\n')
+
+    result = subprocess.run(
+        ["sh", str(_BIN_WRAPPER), "check", "--all", str(violating)],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 3
+
+
 def _guard_env():
     return {**os.environ, "COMMENT_INTENT_GUARD": str(_REPO_ROOT / "comment_intent_guard.py")}
 

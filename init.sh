@@ -93,7 +93,7 @@ if [ ! -f "$CLAUDE_MD" ] || ! grep -qF "$CLAUDE_MD_MARKER" "$CLAUDE_MD"; then
   {
     echo ""
     echo "$CLAUDE_MD_MARKER"
-    echo "Self-documenting code is enforced here by the comment-intent-guard plugin. Run /comment-intent-guard:comment-guard-init if these files are missing."
+    echo "Self-documenting code is enforced here by the comment-intent-guard plugin. Run /comment-intent-guard:comment-guard-init in Claude Code, or comment-intent-guard init on the command line, if these files are missing."
   } >> "$CLAUDE_MD"
   write_report_line "$CLAUDE_MD" "created"
 else

@@ -1,0 +1,29 @@
+#!/bin/sh
+set -eu
+
+resolve_self() {
+  if command -v readlink >/dev/null 2>&1 && readlink -f "$0" >/dev/null 2>&1; then
+    dirname "$(readlink -f "$0")"
+  else
+    (cd "$(dirname "$0")" && pwd -P)
+  fi
+}
+
+BIN_DIR="$(resolve_self)"
+ROOT_DIR="$(cd "$BIN_DIR/.." && pwd -P)"
+
+subcommand="${1:-}"
+[ $# -gt 0 ] && shift
+
+case "$subcommand" in
+  init)
+    exec bash "$ROOT_DIR/init.sh" "$@"
+    ;;
+  check)
+    exec python3 "$ROOT_DIR/comment_intent_guard.py" "$@"
+    ;;
+  *)
+    echo "usage: comment-intent-guard <init|check> [args...]" >&2
+    exit 2
+    ;;
+esac
