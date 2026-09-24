@@ -63,14 +63,18 @@ def _init_gate_test_repo(tmp_path):
     return checkout_dir / "comment_intent_guard.py"
 
 
-def _run_gate_step_with_stub_guard_exit_code(tmp_path, stub_exit_code):
+def _run_gate_step_with_stub_guard(tmp_path, stub_body):
     stub_path = _init_gate_test_repo(tmp_path)
-    stub_path.write_text(f'import sys\nprint("stub output")\nsys.exit({stub_exit_code})\n')
+    stub_path.write_text(stub_body)
     script = _run_step_script(_load_gate())
     env = dict(os.environ, BASE_REF="main", PATHS="*.py")
     return subprocess.run(
         [_BASH, "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
     )
+
+
+def _stub_body_exiting(code):
+    return f'import sys\nprint("stub output")\nsys.exit({code})\n'
 
 
 @pytest.mark.skipif(_BASH is None, reason="no bash with mapfile support found on PATH")
@@ -79,25 +83,19 @@ def _run_gate_step_with_stub_guard_exit_code(tmp_path, stub_exit_code):
     [(0, 0), (1, 0), (3, 1), (4, 1), (2, 1)],
     ids=["clean", "advisory", "bright_line", "internal_error", "unexpected_code"],
 )
-def test_gate_run_step_fails_the_build_on_exit_3_and_4_and_passes_on_0_and_1(
+def test_gate_run_step_maps_guard_exit_code_to_build_result(
     tmp_path, stub_exit_code, expected_step_exit_code
 ):
-    result = _run_gate_step_with_stub_guard_exit_code(tmp_path, stub_exit_code)
+    result = _run_gate_step_with_stub_guard(tmp_path, _stub_body_exiting(stub_exit_code))
 
     assert result.returncode == expected_step_exit_code
-    if stub_exit_code in (0, 1):
-        assert "stub output" in result.stdout
+    assert "stub output" in result.stdout
 
 
 @pytest.mark.skipif(_BASH is None, reason="no bash with mapfile support found on PATH")
 def test_gate_run_step_emits_a_warning_annotation_per_advisory_line(tmp_path):
-    stub_path = _init_gate_test_repo(tmp_path)
-    stub_path.write_text('import sys\nprint("thing.py: msg")\nsys.exit(1)\n')
-    script = _run_step_script(_load_gate())
-    env = dict(os.environ, BASE_REF="main", PATHS="*.py")
-
-    result = subprocess.run(
-        [_BASH, "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+    result = _run_gate_step_with_stub_guard(
+        tmp_path, 'import sys\nprint("thing.py: msg")\nsys.exit(1)\n'
     )
 
     assert result.returncode == 0

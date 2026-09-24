@@ -389,6 +389,10 @@ def _argv_recording_stub_body(exit_code):
     return f"import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit({exit_code})\n"
 
 
+def _argv_file_recording_stub_body(path):
+    return f"import sys\nopen({str(path)!r}, 'w').write(' '.join(sys.argv[1:]))\nsys.exit(0)\n"
+
+
 def _passed_files(stdout):
     return [a for a in stdout.split("ARGV:", 1)[1].split() if a != "--all"]
 
@@ -609,10 +613,7 @@ def test_pre_commit_allows_a_clean_staged_python_file(tmp_path):
     clean.write_text("def add(a, b):\n    return a + b\n")
     subprocess.run(["git", "add", "good.py"], cwd=tmp_path, check=True)
     argv_log = tmp_path / "argv.log"
-    _, env = _stub_guard_env(
-        tmp_path,
-        f"import sys\nopen({str(argv_log)!r}, 'w').write(' '.join(sys.argv[1:]))\nsys.exit(0)\n",
-    )
+    _, env = _stub_guard_env(tmp_path, _argv_file_recording_stub_body(argv_log))
 
     result = subprocess.run(
         ["bash", str(pre_commit)],

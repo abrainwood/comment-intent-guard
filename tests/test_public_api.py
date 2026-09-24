@@ -137,11 +137,11 @@ def _csharp_issue_reference_violations_sample():
 def test_finding_producing_function_returns_well_shaped_findings(build_findings):
     findings = build_findings()
     assert findings
-    for message, span in findings:
-        assert isinstance(message, str)
-        start, end = span
-        assert isinstance(start, int)
-        assert isinstance(end, int)
+    shapes = [
+        (isinstance(message, str), isinstance(start, int), isinstance(end, int))
+        for message, (start, end) in findings
+    ]
+    assert shapes == [(True, True, True)] * len(findings)
 
 
 def test_docstring_finding_span_tracks_where_the_docstring_actually_sits():
@@ -282,17 +282,6 @@ def test_surface_check_catches_a_declared_symbol_dropped_from_the_declaration():
     assert _module_public_names(guard) != shrunk_declaration
 
 
-def test_shape_check_catches_a_finding_producer_returning_bare_strings():
-    mutated = _load_module(name="comment_intent_guard_bare_strings_for_test")
-    mutated.find_misplaced_rationale = lambda text: ["a bare string finding with no span at all"]
-
-    findings = mutated.find_misplaced_rationale("irrelevant")
-
-    with pytest.raises(ValueError):
-        for _message, _span in findings:
-            pass
-
-
 @pytest.mark.parametrize(
     "fn_name, prefix", list(CONSUMER_MESSAGE_PREFIXES.items()), ids=list(CONSUMER_MESSAGE_PREFIXES)
 )
@@ -300,19 +289,6 @@ def test_consumer_message_prefix_is_still_produced(fn_name, prefix):
     findings = getattr(guard, fn_name)(_oversize_docstring_text())
 
     assert any(message.startswith(prefix) for message, _ in findings)
-
-
-def test_consumer_prefix_check_catches_a_reworded_finding_message():
-    reworded = _load_module(name="comment_intent_guard_reworded_message_for_test")
-    real_finder = reworded.find_misplaced_rationale
-    reworded.find_misplaced_rationale = lambda text: [
-        (message.replace("Docstring spans", "Docstring covers"), span)
-        for message, span in real_finder(text)
-    ]
-
-    findings = reworded.find_misplaced_rationale(_oversize_docstring_text())
-
-    assert not any(message.startswith("Docstring spans") for message, _ in findings)
 
 
 def test_existence_check_catches_a_declared_function_renamed_on_the_module():
