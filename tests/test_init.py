@@ -30,6 +30,23 @@ def test_fresh_repo_gets_all_four_files_with_hookspath_set_and_pre_commit_execut
     pre_commit = tmp_path / ".githooks" / "pre-commit"
     assert pre_commit.stat().st_mode & 0o111
 
+    assert "created .comment-intent-guard.json" in result.stdout
+    assert "created .githooks/pre-commit" in result.stdout
+    assert "created .github/workflows/comment-guard.yml" in result.stdout
+    assert "created CLAUDE.md" in result.stdout
+    assert "core.hooksPath set to .githooks" in result.stdout
+
+
+def test_second_run_reports_every_file_as_unchanged(tmp_path):
+    _init_tmp_repo(tmp_path)
+
+    result = _init_tmp_repo(tmp_path)
+
+    assert "unchanged .comment-intent-guard.json" in result.stdout
+    assert "unchanged .githooks/pre-commit" in result.stdout
+    assert "unchanged .github/workflows/comment-guard.yml" in result.stdout
+    assert "unchanged CLAUDE.md" in result.stdout
+
 
 def _snapshot(tmp_path):
     files = [
@@ -51,6 +68,73 @@ def test_second_run_is_a_no_op(tmp_path):
     assert _snapshot(tmp_path) == before
 
 
+def test_existing_hookspath_pointing_elsewhere_is_refused_and_nothing_is_written(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "core.hooksPath", "husky/hooks"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(["bash", str(_INIT_SH)], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert "husky/hooks" in result.stderr
+    assert not (tmp_path / ".comment-intent-guard.json").exists()
+
+
+def test_native_git_hooks_pre_commit_is_refused_and_nothing_is_written(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    native_hook = tmp_path / ".git" / "hooks" / "pre-commit"
+    native_hook.write_text("#!/bin/sh\necho native\n")
+
+    result = subprocess.run(["bash", str(_INIT_SH)], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert str(native_hook) in result.stderr
+    assert not (tmp_path / ".comment-intent-guard.json").exists()
+
+
+def test_differing_workflow_yml_is_refused_before_any_write(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    workflow = tmp_path / ".github" / "workflows" / "comment-guard.yml"
+    workflow.parent.mkdir(parents=True)
+    workflow.write_text("name: something else entirely\n")
+
+    result = subprocess.run(["bash", str(_INIT_SH)], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert workflow.read_text() == "name: something else entirely\n"
+    assert not (tmp_path / ".comment-intent-guard.json").exists()
+    assert not (tmp_path / ".githooks" / "pre-commit").exists()
+    hooks_path = subprocess.run(
+        ["git", "config", "core.hooksPath"], cwd=tmp_path, capture_output=True, text=True
+    )
+    assert hooks_path.returncode != 0 or hooks_path.stdout.strip() == ""
+
+
+def test_stale_marked_pre_commit_is_refused_without_force(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".githooks").mkdir()
+    stale = tmp_path / ".githooks" / "pre-commit"
+    stale.write_text("#!/usr/bin/env bash\n# comment-intent-guard pre-commit\necho stale\n")
+
+    result = subprocess.run(["bash", str(_INIT_SH)], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode != 0
+    assert stale.read_text() == "#!/usr/bin/env bash\n# comment-intent-guard pre-commit\necho stale\n"
+
+
+def test_force_overwrites_a_stale_marked_pre_commit(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / ".githooks").mkdir()
+    stale = tmp_path / ".githooks" / "pre-commit"
+    stale.write_text("#!/usr/bin/env bash\n# comment-intent-guard pre-commit\necho stale\n")
+
+    result = subprocess.run(
+        ["bash", str(_INIT_SH), "--force"], cwd=tmp_path, capture_output=True, text=True
+    )
+
+    assert result.returncode == 0
+    assert stale.read_text() == (_REPO_ROOT / "templates" / "pre-commit.sh").read_text()
+
+
 def test_foreign_pre_commit_is_refused_and_nothing_is_written(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     (tmp_path / ".githooks").mkdir()
@@ -60,7 +144,7 @@ def test_foreign_pre_commit_is_refused_and_nothing_is_written(tmp_path):
     result = subprocess.run(["bash", str(_INIT_SH)], cwd=tmp_path, capture_output=True, text=True)
 
     assert result.returncode != 0
-    assert "pre-commit" in result.stderr
+    assert str(foreign) in result.stderr
     assert foreign.read_text() == "#!/usr/bin/env bash\necho 'some other tool'\n"
     assert not (tmp_path / ".comment-intent-guard.json").exists()
     assert not (tmp_path / "CLAUDE.md").exists()
@@ -75,6 +159,17 @@ def test_claude_md_marker_already_present_is_not_duplicated(tmp_path):
 
     assert result.returncode == 0
     assert (tmp_path / "CLAUDE.md").read_text() == existing
+
+
+def test_claude_md_append_separates_with_a_newline_when_file_lacks_trailing_newline(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    (tmp_path / "CLAUDE.md").write_text("# My repo\nNo trailing newline here")
+
+    result = subprocess.run(["bash", str(_INIT_SH)], cwd=tmp_path, capture_output=True, text=True)
+
+    assert result.returncode == 0
+    content = (tmp_path / "CLAUDE.md").read_text()
+    assert "here\n\n<!-- comment-intent-guard:comment-guard-init -->" in content
 
 
 def _guard_env():
