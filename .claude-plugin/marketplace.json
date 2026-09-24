@@ -1,13 +1,28 @@
 {
   "name": "comment-intent-guard",
   "owner": {
-    "name": "Andrew Brainwood"
+    "name": "Andrew Brainwood",
+    "url": "https://github.com/abrainwood"
   },
   "plugins": [
     {
       "name": "comment-intent-guard",
       "source": "./",
-      "description": "Denies rationale written into source comments - test docstrings, ticket ids, dates, SHAs - at Write/Edit time, and advises on the rest. Python, YAML, Jinja, C#."
+      "description": "Denies rationale written into source comments - test docstrings, ticket ids, dates, SHAs - at Write/Edit time, and advises on the rest. Python, YAML, Jinja, C#.",
+      "author": {
+        "name": "Andrew Brainwood",
+        "url": "https://github.com/abrainwood"
+      },
+      "homepage": "https://github.com/abrainwood/comment-intent-guard#readme",
+      "repository": "https://github.com/abrainwood/comment-intent-guard",
+      "license": "MIT",
+      "keywords": [
+        "code-review",
+        "comments",
+        "linting",
+        "pre-commit",
+        "ci"
+      ]
     }
   ]
 }
