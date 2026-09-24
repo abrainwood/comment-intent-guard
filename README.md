@@ -180,7 +180,7 @@ or run as `__main__` still pick up their mutants. The second patch credits
 tests that reach the code through a spawned process; it only switches on with
 `--with-subprocess-coverage`. Neither fix is in mutmut 3.8.0 or upstream main.
 
-The fast lane leaves out the shell tests (`test_init.py`), the public-surface
+The fast lane leaves out the shell test (`test_init.py`), the public-surface
 introspection test (it sees mutmut's generated names), and
 the 51-session eviction test (slow). Score is detected / total mutants, where
 detected is killed plus timed out. The gap between the fast lane and the full

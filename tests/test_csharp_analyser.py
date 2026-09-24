@@ -579,6 +579,17 @@ def test_two_tightly_adjacent_block_comments_on_one_line_each_get_their_own_span
     ]
 
 
+def test_empty_block_comment_close_search_starts_immediately_after_the_opener():
+    text = "/**/ // closes #12\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [
+        ("block", 0, 0, ""),
+        ("line", 0, 0, " closes #12"),
+    ]
+
+
 def test_adjacent_quotes_in_a_regular_string_are_not_doubling_escaped():
     text = 'var s = "" // fixed on 2026-01-05\n'
 

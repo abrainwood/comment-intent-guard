@@ -288,6 +288,14 @@ def test_version_guard_raises_analysis_unavailable_below_python_3_12():
             guard.find_misplaced_rationale(text)
 
 
+def test_single_line_docstring_with_an_evidence_marker_is_flagged_as_a_docstring():
+    text = '"""fixed on 2026-05-22"""\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == [(guard._evidence_finding("Docstring", 0), (1, 1))]
+
+
 def test_docstring_of_exactly_the_threshold_line_count_is_not_flagged():
     body_line_count = guard.DOCSTRING_LINE_THRESHOLD - 2
     lines = "\n".join(f"    reason {i}" for i in range(body_line_count))
