@@ -178,7 +178,7 @@ def test_more_than_200_candidates_warns_with_a_single_bash_backstop_prefix(tmp_p
     module = _import_bash_backstop()
     monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
     monkeypatch.setattr(module, "_repo_root", lambda cwd: str(tmp_path))
-    fake_paths = [f"pkg/module_{n}.py" for n in range(201)]
+    fake_paths = [f"pkg/module_{n}.py" for n in range(module._MAX_CANDIDATES + 1)]
     monkeypatch.setattr(module, "_candidate_files", lambda repo_root: (fake_paths, {}))
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
@@ -187,7 +187,7 @@ def test_more_than_200_candidates_warns_with_a_single_bash_backstop_prefix(tmp_p
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "200" in captured.err
+    assert f"{len(fake_paths)} changed files exceeds the {module._MAX_CANDIDATES}-file cap" in captured.err
     assert "bash_backstop:" in captured.err
     assert "comment_intent_guard:" not in captured.err
 
@@ -393,7 +393,8 @@ def test_51_sessions_evicts_the_oldest(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(module, "_repo_root", lambda cwd: str(tmp_path))
     monkeypatch.setattr(module, "_candidate_files", lambda repo_root: ([], {}))
 
-    for n in range(51):
+    session_count = module.guard.MAX_TRACKED_SESSIONS + 1
+    for n in range(session_count):
         payload = {"session_id": f"session-{n}", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
         monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
         module._run()
@@ -402,8 +403,8 @@ def test_51_sessions_evicts_the_oldest(tmp_path, monkeypatch, capsys):
     stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
     stamps = json.loads(stamps_path.read_text())
     assert "session-0" not in stamps
-    assert "session-50" in stamps
-    assert len(stamps) == 50
+    assert f"session-{session_count - 1}" in stamps
+    assert len(stamps) == module.guard.MAX_TRACKED_SESSIONS
 
 
 def test_partial_write_to_the_stamps_file_does_not_break_the_next_run(tmp_path):
@@ -432,28 +433,29 @@ def test_partial_write_to_the_stamps_file_does_not_break_the_next_run(tmp_path):
 
 def test_build_message_caps_at_40_findings_with_a_more_findings_note():
     module = _import_bash_backstop()
-    lines = [f"finding {n}" for n in range(45)]
+    over_the_cap = module._MAX_FINDINGS + 5
+    lines = [f"finding {n}" for n in range(over_the_cap)]
 
     message = module._build_message(lines)
 
-    assert message.count("finding ") == 40
+    assert message.count("finding ") == module._MAX_FINDINGS
     assert "... and 5 more findings" in message
 
 
 def test_build_message_with_exactly_40_findings_has_no_more_findings_note():
     module = _import_bash_backstop()
-    lines = [f"finding {n}" for n in range(40)]
+    lines = [f"finding {n}" for n in range(module._MAX_FINDINGS)]
 
     message = module._build_message(lines)
 
-    assert message.count("finding ") == 40
+    assert message.count("finding ") == module._MAX_FINDINGS
     assert "more findings" not in message
 
 
 def test_build_message_byte_cap_reports_the_exact_omitted_count():
     module = _import_bash_backstop()
     finding_byte_size = 500
-    finding_count = 45
+    finding_count = module._MAX_FINDINGS + 5
     lines = ["x" * finding_byte_size for _ in range(finding_count)]
 
     message = module._build_message(lines)
@@ -480,7 +482,7 @@ def test_exactly_200_candidates_does_not_warn(tmp_path, monkeypatch, capsys):
     module = _import_bash_backstop()
     monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
     monkeypatch.setattr(module, "_repo_root", lambda cwd: str(tmp_path))
-    fake_paths = [f"pkg/module_{n}.py" for n in range(200)]
+    fake_paths = [f"pkg/module_{n}.py" for n in range(module._MAX_CANDIDATES)]
     monkeypatch.setattr(module, "_candidate_files", lambda repo_root: (fake_paths, {}))
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
@@ -568,22 +570,23 @@ def test_advisory_only_file_appears_without_a_bright_line_tag(tmp_path):
     assert "BRIGHT LINE" not in context
 
 
-def test_git_call_count_stays_constant_regardless_of_candidate_count(tmp_path, monkeypatch):
-    _init_git_repo(tmp_path)
-    for n in range(50):
-        _write(tmp_path, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "add modules"], cwd=tmp_path, check=True)
+def _git_call_count_for_a_modified_candidate_scan(repo_dir, monkeypatch, file_count):
+    repo_dir.mkdir()
+    _init_git_repo(repo_dir)
+    for n in range(file_count):
+        _write(repo_dir, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n")
+    subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "add modules"], cwd=repo_dir, check=True)
     module = _import_bash_backstop()
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    payload = {"session_id": "session-a", "cwd": str(repo_dir), "tool_name": "Bash", "tool_input": {}}
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(repo_dir / "state" / "state.json"))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
-    module._run()  # baseline call establishes the mtime stamp
+    module._run()
 
-    for n in range(50):
-        target = tmp_path / "pkg" / f"module_{n}.py"
-        target.write_text(f"VALUE_{n} = {n}  # bumped\n")
-    for target in (tmp_path / "pkg").glob("*.py"):
+    for n in range(file_count):
+        target = repo_dir / "pkg" / f"module_{n}.py"
+        target.write_text(f"VALUE_{n} = {n + 1}\n")
+    for target in (repo_dir / "pkg").glob("*.py"):
         _touch_future(target)
 
     real_run = subprocess.run
@@ -600,7 +603,14 @@ def test_git_call_count_stays_constant_regardless_of_candidate_count(tmp_path, m
 
     module._run()
 
-    assert call_count == 4
+    return call_count
+
+
+def test_git_call_count_stays_constant_regardless_of_candidate_count(tmp_path, monkeypatch):
+    one_candidate = _git_call_count_for_a_modified_candidate_scan(tmp_path / "one", monkeypatch, file_count=1)
+    fifty_candidates = _git_call_count_for_a_modified_candidate_scan(tmp_path / "fifty", monkeypatch, file_count=50)
+
+    assert one_candidate == fifty_candidates
 
 
 def test_backstop_reports_blocking_findings_from_an_unanalyzable_file(tmp_path, monkeypatch):
@@ -830,7 +840,7 @@ def test_second_call_over_the_cap_skips_before_any_per_file_read_or_stat(tmp_pat
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
     module._run()
 
-    nonexistent_paths = [f"pkg/module_{n}.py" for n in range(201)]
+    nonexistent_paths = [f"pkg/module_{n}.py" for n in range(module._MAX_CANDIDATES + 1)]
     monkeypatch.setattr(module, "_candidate_files", lambda repo_root: (nonexistent_paths, {}))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
 
@@ -838,6 +848,6 @@ def test_second_call_over_the_cap_skips_before_any_per_file_read_or_stat(tmp_pat
 
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "200" in captured.err
+    assert f"{len(nonexistent_paths)} changed files exceeds the {module._MAX_CANDIDATES}-file cap" in captured.err
     assert "could not read" not in captured.err
     assert "could not stat" not in captured.err
