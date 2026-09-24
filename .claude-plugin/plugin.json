@@ -1,0 +1,8 @@
+{
+  "name": "comment-intent-guard",
+  "version": "1.0.0",
+  "description": "Fail-open comment-intent checks for Python and YAML/Jinja source, enforced at Write/Edit time.",
+  "author": {
+    "name": "Andrew Brainwood"
+  }
+}
