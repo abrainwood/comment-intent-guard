@@ -174,18 +174,22 @@ def test_a_different_session_id_is_reported_again(tmp_path):
     assert json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
 
 
-def test_more_than_200_candidates_warns_and_produces_no_output(tmp_path):
-    _init_git_repo(tmp_path)
-    for n in range(201):
-        _write(tmp_path, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n")
+def test_more_than_200_candidates_warns_with_a_single_bash_backstop_prefix(tmp_path, monkeypatch, capsys):
+    module = _import_bash_backstop()
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    monkeypatch.setattr(module, "_repo_root", lambda cwd: str(tmp_path))
+    fake_paths = [f"pkg/module_{n}.py" for n in range(201)]
+    monkeypatch.setattr(module, "_candidate_files", lambda repo_root: (fake_paths, {}))
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
 
-    result = _run(payload, env)
+    module._run()
 
-    assert result.returncode == 0
-    assert result.stdout == ""
-    assert "200" in result.stderr
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "200" in captured.err
+    assert "bash_backstop:" in captured.err
+    assert "comment_intent_guard:" not in captured.err
 
 
 def test_malformed_json_input_does_not_crash_uncaught(tmp_path):
@@ -382,13 +386,18 @@ def test_violating_line_appended_to_a_tracked_file_reports_only_the_new_finding(
     assert "near line 3" in context
 
 
-def test_51_sessions_evicts_the_oldest(tmp_path):
+def test_51_sessions_evicts_the_oldest(tmp_path, monkeypatch, capsys):
     _init_git_repo(tmp_path)
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    module = _import_bash_backstop()
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    monkeypatch.setattr(module, "_repo_root", lambda cwd: str(tmp_path))
+    monkeypatch.setattr(module, "_candidate_files", lambda repo_root: ([], {}))
 
     for n in range(51):
         payload = {"session_id": f"session-{n}", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-        assert _run(payload, env).stdout == ""
+        monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
+        module._run()
+        assert capsys.readouterr().out == ""
 
     stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
     stamps = json.loads(stamps_path.read_text())
@@ -467,17 +476,18 @@ def test_build_message_caps_by_byte_budget_even_under_40_findings():
     assert "more findings" in message
 
 
-def test_exactly_200_candidates_does_not_warn(tmp_path):
-    _init_git_repo(tmp_path)
-    for n in range(200):
-        _write(tmp_path, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n")
+def test_exactly_200_candidates_does_not_warn(tmp_path, monkeypatch, capsys):
+    module = _import_bash_backstop()
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    monkeypatch.setattr(module, "_repo_root", lambda cwd: str(tmp_path))
+    fake_paths = [f"pkg/module_{n}.py" for n in range(200)]
+    monkeypatch.setattr(module, "_candidate_files", lambda repo_root: (fake_paths, {}))
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
 
-    result = _run(payload, env)
+    module._run()
 
-    assert result.returncode == 0
-    assert result.stderr == ""
+    assert capsys.readouterr().err == ""
 
 
 def test_modified_tracked_file_is_reported_as_a_bright_line(tmp_path):
@@ -534,20 +544,6 @@ def test_import_of_comment_intent_guard_works_when_launched_from_an_unrelated_cw
 
     assert result.returncode == 0
     assert result.stderr == ""
-
-
-def test_warning_uses_a_single_bash_backstop_prefix_not_comment_intent_guard(tmp_path):
-    _init_git_repo(tmp_path)
-    for n in range(201):
-        _write(tmp_path, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n")
-    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-
-    result = _run(payload, env)
-
-    assert result.stderr.count(":") >= 1
-    assert "bash_backstop:" in result.stderr
-    assert "comment_intent_guard:" not in result.stderr
 
 
 def test_advisory_only_file_appears_without_a_bright_line_tag(tmp_path):
@@ -825,26 +821,23 @@ def test_heredoc_written_jinja_with_an_issue_reference_is_reported_as_a_bright_l
     assert "thing.jinja" in context
 
 
-def test_over_the_cap_skips_before_any_per_file_read_or_stat(tmp_path):
-    _init_git_repo(tmp_path)
+def test_second_call_over_the_cap_skips_before_any_per_file_read_or_stat(tmp_path, monkeypatch, capsys):
+    module = _import_bash_backstop()
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
+    monkeypatch.setattr(module, "_repo_root", lambda cwd: str(tmp_path))
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
-    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
-    assert _run(payload, env).stdout == ""
+    monkeypatch.setattr(module, "_candidate_files", lambda repo_root: ([], {}))
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
+    module._run()
 
-    targets = [_write(tmp_path, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n") for n in range(200)]
-    unreadable = tmp_path / "pkg" / "unreadable.py"
-    unreadable.write_text("pass\n")
-    unreadable.chmod(0o000)
-    for target in [*targets, unreadable]:
-        _touch_future(target)
+    nonexistent_paths = [f"pkg/module_{n}.py" for n in range(201)]
+    monkeypatch.setattr(module, "_candidate_files", lambda repo_root: (nonexistent_paths, {}))
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
 
-    try:
-        result = _run(payload, env)
-    finally:
-        unreadable.chmod(0o644)
+    module._run()
 
-    assert result.returncode == 0
-    assert result.stdout == ""
-    assert "200" in result.stderr
-    assert "could not read" not in result.stderr
-    assert "could not stat" not in result.stderr
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "200" in captured.err
+    assert "could not read" not in captured.err
+    assert "could not stat" not in captured.err
