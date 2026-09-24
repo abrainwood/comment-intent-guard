@@ -42,7 +42,10 @@ public class Widget
 GOLDEN_EXTERNAL_ID_CS = """\
 public class Widget
 {
+    /// <summary>
+    /// Validates the input.
     /// Fixes JIRA-4821 by validating the input before dispatch.
+    /// </summary>
     public void Validate()
     {
     }
@@ -108,7 +111,7 @@ def test_external_id_fixture_is_blocked():
         "BLOCKED - external id 'JIRA-4821' in an XML doc comment near line 3. "
         "Nobody reading the code knows what it means. Name the behaviour that "
         "breaks; the id belongs in the commit message so git blame still finds it.",
-        (3, 3),
+        (3, 6),
     )]
 
 
