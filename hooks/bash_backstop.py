@@ -3,46 +3,19 @@ import json
 import os
 import subprocess
 import sys
-import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import comment_intent_guard as guard  # noqa: E402
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import stamps as stamps_module  # noqa: E402
 
 _TRACKED_GLOBS = ["*.py", "*.yaml", "*.yml", "*.jinja", "*.j2"]
 _MAX_CANDIDATES = 200
 _GIT_TIMEOUT_SECONDS = 5
 _MAX_FINDINGS = 40
 _MAX_MESSAGE_BYTES = 4096
-_ANONYMOUS_SESSION_KEY = "__no_session_id__"
-
-
-def _stamps_path():
-    return os.path.join(os.path.dirname(guard._state_path()), "bash_backstop_stamps.json")
-
-
-def _save_stamps(stamps_path, session_key, stamp, stamps):
-    stamps.pop(session_key, None)
-    stamps[session_key] = stamp
-    guard._evict_oldest_sessions(stamps)
-    directory = os.path.dirname(stamps_path) or "."
-    try:
-        os.makedirs(directory, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".bash_backstop_stamps_")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(stamps, handle)
-            os.replace(tmp_path, stamps_path)
-        except OSError:
-            os.unlink(tmp_path)
-            raise
-    except OSError as exc:
-        guard._warn(f"could not persist stamps to {stamps_path} ({type(exc).__name__})", prefix="bash_backstop")
-
-
-def _last_run(stamps, session_id):
-    stamp = stamps.get(session_id)
-    return stamp if isinstance(stamp, (int, float)) else 0
 
 
 def _repo_root(cwd):
@@ -211,17 +184,17 @@ def _run():
         )
         return
 
-    session_key = session_id if isinstance(session_id, str) else _ANONYMOUS_SESSION_KEY
-    stamps_path = _stamps_path()
-    stamps = guard._load_state(stamps_path)
+    session_key = stamps_module.session_key_for(session_id)
+    stamps_path = stamps_module.stamps_path()
+    all_stamps = stamps_module.load_stamps(stamps_path)
 
-    if session_key not in stamps:
+    if session_key not in all_stamps:
         # First call for a session establishes the mtime baseline; the backstop
         # covers writes made during this session, not the repo's pre-existing state.
-        _save_stamps(stamps_path, session_key, now, stamps)
+        stamps_module.save_stamps(stamps_path, session_key, now, all_stamps)
         return
 
-    last_run = _last_run(stamps, session_key)
+    last_run = stamps_module.last_run(all_stamps, session_key)
     fresh = []
     for candidate in candidates:
         try:
@@ -253,7 +226,7 @@ def _run():
             advisory = guard._restrict_to_added_lines(advisory, added)
         lines.extend(_findings_message(file_path, blocking, advisory))
 
-    _save_stamps(stamps_path, session_key, now, stamps)
+    stamps_module.save_stamps(stamps_path, session_key, now, all_stamps)
 
     if not lines:
         return

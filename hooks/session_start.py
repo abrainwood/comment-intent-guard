@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import stamps  # noqa: E402
 
 _STANZA = "\n".join(
     [
@@ -16,8 +21,23 @@ _STANZA = "\n".join(
 )
 
 
+def _seed_session_baseline(raw_input):
+    try:
+        payload = json.loads(raw_input) if raw_input else {}
+    except json.JSONDecodeError:
+        payload = {}
+    session_key = stamps.session_key_for(payload.get("session_id") if isinstance(payload, dict) else None)
+    path = stamps.stamps_path()
+    all_stamps = stamps.load_stamps(path)
+    if session_key in all_stamps:
+        # Resume/compact must not reset an in-progress session's baseline.
+        return
+    stamps.save_stamps(path, session_key, int(time.time()), all_stamps)
+
+
 def main():
-    sys.stdin.read()
+    raw_input = sys.stdin.read()
+    _seed_session_baseline(raw_input)
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",
