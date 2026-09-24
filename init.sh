@@ -26,9 +26,7 @@ refuse() {
   exit 1
 }
 
-# A destination not owned by us (no marker, or --force absent while it
-# differs from the template) is left alone - refuse rather than guess.
-check_template_owned() {
+refuse_if_not_ours() {
   local dest="$1" src="$2" marker="$3"
   [ -e "$dest" ] || return 0
   if [ -n "$marker" ] && ! grep -qF "$marker" "$dest"; then
@@ -49,9 +47,9 @@ if [ -e "$native_hook" ]; then
   refuse "refusing to install - a native pre-commit hook already exists at $native_hook"
 fi
 
-check_template_owned "$JSON_DEST" "$JSON_SRC" ""
-check_template_owned "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC" "$PRE_COMMIT_MARKER"
-check_template_owned "$WORKFLOW_DEST" "$WORKFLOW_SRC" ""
+refuse_if_not_ours "$JSON_DEST" "$JSON_SRC" ""
+refuse_if_not_ours "$PRE_COMMIT_DEST" "$PRE_COMMIT_SRC" "$PRE_COMMIT_MARKER"
+refuse_if_not_ours "$WORKFLOW_DEST" "$WORKFLOW_SRC" ""
 
 write_report_line() {
   local dest="$1" verb="$2"

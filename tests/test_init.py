@@ -294,10 +294,8 @@ def test_pre_commit_blocks_a_staged_violating_python_file_and_prints_the_finding
 
 def test_pre_commit_exit_4_from_the_guard_warns_and_passes(tmp_path):
     pre_commit = _init_repo_and_get_pre_commit(tmp_path)
-    unreadable = tmp_path / "unreadable.py"
-    # invalid UTF-8 makes the guard's own file read raise UnicodeDecodeError,
-    # which it reports as an internal error (exit 4), not a bright line.
-    unreadable.write_bytes(b"\xff\xfe\x00bad-bytes")
+    invalid_utf8_file = tmp_path / "unreadable.py"
+    invalid_utf8_file.write_bytes(b"\xff\xfe\x00bad-bytes")
     subprocess.run(["git", "add", "unreadable.py"], cwd=tmp_path, check=True)
 
     result = subprocess.run(
