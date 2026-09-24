@@ -342,6 +342,22 @@ def test_at_dollar_interpolated_verbatim_string_backslash_does_not_escape_the_cl
     assert spans == [("line", 0, 0, " real")]
 
 
+def test_interpolation_hole_with_a_nested_escaped_quote_does_not_confuse_the_closer():
+    text = 'var s = $"X: {Get("a\\"b")}"; // fixed on 2026-01-05\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " fixed on 2026-01-05")]
+
+
+def test_doubled_braces_in_an_interpolated_string_are_literal_not_a_hole():
+    text = 'var s = $"{{literal}} {Name}"; // real\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " real")]
+
+
 def test_contiguous_triple_slash_lines_group_into_one_doc_span():
     text = "/// <summary>\n/// Does a thing.\n/// </summary>\nvoid M() {}\n"
 

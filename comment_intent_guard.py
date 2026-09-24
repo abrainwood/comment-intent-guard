@@ -569,23 +569,9 @@ def _csharp_comment_spans(text):
 
     while i < n:
         ch = text[i]
-        if ch == "@" and i + 1 < n and text[i + 1] == '"':
-            i = _csharp_skip_verbatim_string(text, i + 1)
-            continue
-        if ch == "@" and i + 2 < n and text[i + 1] == "$" and text[i + 2] == '"':
-            i = _csharp_skip_verbatim_string(text, i + 2)
-            continue
-        if ch == '"':
-            quote_run = 1
-            while i + quote_run < n and text[i + quote_run] == '"':
-                quote_run += 1
-            if quote_run >= 3:
-                i = _csharp_skip_raw_string(text, i, quote_run)
-            else:
-                i = _csharp_skip_string(text, i)
-            continue
-        if ch == "'":
-            i = _csharp_skip_char_literal(text, i)
+        literal_end = _csharp_try_skip_literal(text, i)
+        if literal_end is not None:
+            i = literal_end
             continue
         if ch == "/" and i + 1 < n and text[i + 1] == "/":
             is_doc = i + 2 < n and text[i + 2] == "/"
@@ -802,6 +788,76 @@ def _csharp_skip_string(text, start):
             i += 2
             continue
         if text[i] == '"':
+            return i + 1
+        i += 1
+    return i
+
+
+def _csharp_try_skip_literal(text, i):
+    n = len(text)
+    ch = text[i]
+    if ch == "@" and i + 1 < n and text[i + 1] == '"':
+        return _csharp_skip_verbatim_string(text, i + 1)
+    if ch == "@" and i + 2 < n and text[i + 1] == "$" and text[i + 2] == '"':
+        return _csharp_skip_interpolated_string(text, i + 2, verbatim=True)
+    if ch == "$" and i + 2 < n and text[i + 1] == "@" and text[i + 2] == '"':
+        return _csharp_skip_interpolated_string(text, i + 2, verbatim=True)
+    if ch == "$" and i + 1 < n and text[i + 1] == '"':
+        return _csharp_skip_interpolated_string(text, i + 1, verbatim=False)
+    if ch == '"':
+        quote_run = 1
+        while i + quote_run < n and text[i + quote_run] == '"':
+            quote_run += 1
+        if quote_run >= 3:
+            return _csharp_skip_raw_string(text, i, quote_run)
+        return _csharp_skip_string(text, i)
+    if ch == "'":
+        return _csharp_skip_char_literal(text, i)
+    return None
+
+
+def _csharp_skip_interpolation_hole(text, start):
+    i = start + 1
+    n = len(text)
+    depth = 1
+    while i < n:
+        literal_end = _csharp_try_skip_literal(text, i)
+        if literal_end is not None:
+            i = literal_end
+            continue
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return i
+
+
+def _csharp_skip_interpolated_string(text, quote_index, verbatim):
+    i = quote_index + 1
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if not verbatim and ch == "\n":
+            return i
+        if ch == "{" and i + 1 < n and text[i + 1] == "{":
+            i += 2
+            continue
+        if ch == "}" and i + 1 < n and text[i + 1] == "}":
+            i += 2
+            continue
+        if ch == "{":
+            i = _csharp_skip_interpolation_hole(text, i)
+            continue
+        if not verbatim and ch == "\\" and i + 1 < n:
+            i += 2
+            continue
+        if ch == '"':
+            if verbatim and i + 1 < n and text[i + 1] == '"':
+                i += 2
+                continue
             return i + 1
         i += 1
     return i
