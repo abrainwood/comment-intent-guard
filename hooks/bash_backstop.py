@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -15,6 +16,25 @@ _GIT_TIMEOUT_SECONDS = 5
 
 def _stamps_path():
     return os.path.join(os.path.dirname(guard._state_path()), "bash_backstop_stamps.json")
+
+
+def _save_stamps(stamps_path, session_key, stamp, stamps):
+    stamps.pop(session_key, None)
+    stamps[session_key] = stamp
+    guard._evict_oldest_sessions(stamps)
+    directory = os.path.dirname(stamps_path) or "."
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=directory, prefix=".bash_backstop_stamps_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                json.dump(stamps, handle)
+            os.replace(tmp_path, stamps_path)
+        except OSError:
+            os.unlink(tmp_path)
+            raise
+    except OSError as exc:
+        guard._warn(f"could not persist stamps to {stamps_path} ({type(exc).__name__})")
 
 
 def _last_run(stamps, session_id):
@@ -101,8 +121,7 @@ def _run():
     if session_key is not None and session_key not in stamps:
         # First call for a session establishes the mtime baseline; the backstop
         # covers writes made during this session, not the repo's pre-existing state.
-        stamps[session_key] = now
-        guard._save_state(stamps_path, stamps)
+        _save_stamps(stamps_path, session_key, now, stamps)
         return
 
     last_run = _last_run(stamps, session_key) if session_key else 0
@@ -136,8 +155,7 @@ def _run():
         lines.extend(_findings_message(file_path, blocking, advisory))
 
     if session_key is not None:
-        stamps[session_key] = now
-        guard._save_state(stamps_path, stamps)
+        _save_stamps(stamps_path, session_key, now, stamps)
 
     if not lines:
         return

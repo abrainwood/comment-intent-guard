@@ -6,6 +6,8 @@ import sys
 import time
 from pathlib import Path
 
+import pytest
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_PATH = _REPO_ROOT / "hooks" / "bash_backstop.py"
 
@@ -304,3 +306,42 @@ def test_violating_line_appended_to_a_tracked_file_reports_only_the_new_finding(
     assert context.count("date, measurement, or SHA") == 1
     assert "2026-09-24" not in context  # the finding message doesn't echo the date itself
     assert "near line 3" in context
+
+
+def test_51_sessions_evicts_the_oldest(tmp_path):
+    _init_git_repo(tmp_path)
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+
+    for n in range(51):
+        payload = {"session_id": f"session-{n}", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+        assert _run(payload, env).stdout == ""
+
+    stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
+    stamps = json.loads(stamps_path.read_text())
+    assert "session-0" not in stamps
+    assert "session-50" in stamps
+    assert len(stamps) == 50
+
+
+def test_partial_write_to_the_stamps_file_does_not_break_the_next_run(tmp_path):
+    _init_git_repo(tmp_path)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    stamps_path = state_dir / "bash_backstop_stamps.json"
+    stamps_path.write_text('{"session-a": 123, "sess')
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(state_dir / "state.json"))
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    assert result.stdout == ""
+    # A corrupt stamps file is recovered from, not left broken: the baseline
+    # call rewrites it as valid JSON, and a later write is reported normally.
+    assert json.loads(stamps_path.read_text()) == {"session-a": pytest.approx(time.time(), abs=30)}
+
+    target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
+    _touch_future(target)
+    second = _run(payload, env)
+
+    assert "test_x" in json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
