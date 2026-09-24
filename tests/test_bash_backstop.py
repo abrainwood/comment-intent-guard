@@ -448,3 +448,17 @@ def test_import_of_comment_intent_guard_works_when_launched_from_an_unrelated_cw
 
     assert result.returncode == 0
     assert result.stderr == ""
+
+
+def test_warning_uses_a_single_bash_backstop_prefix_not_comment_intent_guard(tmp_path):
+    _init_git_repo(tmp_path)
+    for n in range(201):
+        _write(tmp_path, f"pkg/module_{n}.py", f"VALUE_{n} = {n}\n")
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+
+    result = _run(payload, env)
+
+    assert result.stderr.count(":") >= 1
+    assert "bash_backstop:" in result.stderr
+    assert "comment_intent_guard:" not in result.stderr

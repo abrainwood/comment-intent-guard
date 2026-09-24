@@ -36,7 +36,7 @@ def _save_stamps(stamps_path, session_key, stamp, stamps):
             os.unlink(tmp_path)
             raise
     except OSError as exc:
-        guard._warn(f"could not persist stamps to {stamps_path} ({type(exc).__name__})")
+        guard._warn(f"could not persist stamps to {stamps_path} ({type(exc).__name__})", prefix="bash_backstop")
 
 
 def _last_run(stamps, session_id):
@@ -53,7 +53,7 @@ def _repo_root(cwd):
     except OSError:
         return None
     except subprocess.TimeoutExpired:
-        guard._warn("git rev-parse --show-toplevel timed out - skipping this run")
+        guard._warn("git rev-parse --show-toplevel timed out - skipping this run", prefix="bash_backstop")
         return None
     if result.returncode != 0:
         return None
@@ -67,7 +67,7 @@ def _git_paths(repo_root, args):
             capture_output=True, text=True, timeout=_GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        guard._warn(f"git {' '.join(args)} timed out - skipping this listing")
+        guard._warn(f"git {' '.join(args)} timed out - skipping this listing", prefix="bash_backstop")
         return []
     if result.returncode != 0:
         return []
@@ -135,7 +135,8 @@ def _run():
     candidates = _candidate_files(repo_root)
     if len(candidates) > _MAX_CANDIDATES:
         guard._warn(
-            f"{len(candidates)} changed files exceeds the {_MAX_CANDIDATES}-file cap - skipping this run"
+            f"{len(candidates)} changed files exceeds the {_MAX_CANDIDATES}-file cap - skipping this run",
+            prefix="bash_backstop",
         )
         return
 
@@ -167,7 +168,7 @@ def _run():
             with open(file_path, encoding="utf-8") as handle:
                 text = handle.read()
         except (OSError, UnicodeDecodeError) as exc:
-            guard._warn(f"could not read {file_path} ({type(exc).__name__}) - skipping")
+            guard._warn(f"could not read {file_path} ({type(exc).__name__}) - skipping", prefix="bash_backstop")
             continue
         try:
             blocking, advisory = guard._findings_for_file(file_path, text)

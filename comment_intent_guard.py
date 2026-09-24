@@ -799,8 +799,8 @@ _STATE_COMMENT_KEY = "comment_lines"
 _STATE_CODE_KEY = "code_lines"
 
 
-def _warn(message):
-    print(f"comment_intent_guard: {message}", file=sys.stderr)
+def _warn(message, prefix="comment_intent_guard"):
+    print(f"{prefix}: {message}", file=sys.stderr)
 
 
 def _load_state(state_path):
