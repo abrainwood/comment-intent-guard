@@ -608,7 +608,11 @@ def test_pre_commit_allows_a_clean_staged_python_file(tmp_path):
     clean = tmp_path / "good.py"
     clean.write_text("def add(a, b):\n    return a + b\n")
     subprocess.run(["git", "add", "good.py"], cwd=tmp_path, check=True)
-    _, env = _stub_guard_env(tmp_path, "import sys\nsys.exit(0)\n")
+    argv_log = tmp_path / "argv.log"
+    _, env = _stub_guard_env(
+        tmp_path,
+        f"import sys\nopen({str(argv_log)!r}, 'w').write(' '.join(sys.argv[1:]))\nsys.exit(0)\n",
+    )
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
@@ -619,6 +623,8 @@ def test_pre_commit_allows_a_clean_staged_python_file(tmp_path):
     )
 
     assert result.returncode == 0
+    passed = [a for a in argv_log.read_text().split() if a != "--all"]
+    assert passed == ["good.py"]
 
 
 def test_pre_commit_prints_advisory_findings_and_still_allows_the_commit(tmp_path):
@@ -679,22 +685,19 @@ def test_pre_commit_ignores_a_staged_txt_file_but_checks_a_staged_yaml_file(tmp_
 
 def test_pre_commit_passes_exactly_the_checked_extensions_to_the_guard(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    stub = tmp_path / "stub_guard.py"
-    stub.write_text("import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit(1)\n")
+    _, env = _stub_guard_env(tmp_path, _argv_recording_stub_body(1))
     checked = ["a.py", "b.yml", "c.yaml", "d.jinja", "e.j2"]
     ignored = ["f.txt"]
     for name in checked + ignored:
         (tmp_path / name).write_text("x\n")
     subprocess.run(["git", "add", *checked, *ignored], cwd=tmp_path, check=True)
-    env = {**os.environ, "COMMENT_INTENT_GUARD": str(stub)}
 
     result = subprocess.run(
         ["bash", str(_PRE_COMMIT_SH)], cwd=tmp_path, capture_output=True, text=True, env=env
     )
 
     assert result.returncode == 0
-    passed_args = [a for a in result.stdout.split("ARGV:", 1)[1].split() if a != "--all"]
-    assert set(passed_args) == set(checked)
+    assert set(_passed_files(result.stdout)) == set(checked)
 
 
 def test_pre_commit_handles_a_non_ascii_staged_filename(tmp_path):
