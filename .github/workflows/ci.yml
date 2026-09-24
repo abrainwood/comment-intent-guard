@@ -20,6 +20,8 @@ jobs:
           python-version: "3.12"
       - run: pip install ruff==0.16.5
       - run: ruff check .
+      - name: shellcheck
+        run: shellcheck init.sh templates/pre-commit.sh
       - name: Dogfood the guard on its own diff
         run: |
           python comment_intent_guard.py --base origin/main \
