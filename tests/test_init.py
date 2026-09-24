@@ -202,8 +202,32 @@ def test_pre_commit_blocks_a_staged_violating_python_file_and_prints_the_finding
         env=_guard_env(),
     )
 
-    assert result.returncode != 0
-    assert "bad.py" in result.stdout + result.stderr
+    assert result.returncode == 1
+    assert "BLOCKED" in result.stdout + result.stderr
+    assert "opens with a docstring" in result.stdout + result.stderr
+    assert "commit aborted" in result.stderr
+
+
+def test_pre_commit_exit_4_from_the_guard_warns_and_passes(tmp_path):
+    pre_commit = _init_repo_and_get_pre_commit(tmp_path)
+    unreadable = tmp_path / "unreadable.py"
+    # invalid UTF-8 makes the guard's own file read raise UnicodeDecodeError,
+    # which it reports as an internal error (exit 4), not a bright line.
+    unreadable.write_bytes(b"\xff\xfe\x00bad-bytes")
+    subprocess.run(["git", "add", "unreadable.py"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["bash", str(pre_commit)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=_guard_env(),
+    )
+
+    assert result.returncode == 0
+    assert str(_REPO_ROOT / "comment_intent_guard.py") in result.stderr
+    assert "Python" in result.stderr
+    assert "exited 4" in result.stderr
 
 
 _PRE_COMMIT_SH = _REPO_ROOT / "templates" / "pre-commit.sh"
@@ -228,10 +252,51 @@ def test_script_discovery_falls_back_to_claude_plugin_root_when_env_is_unset(tmp
     assert "bad.py" in result.stdout + result.stderr
 
 
-def test_script_discovery_falls_back_to_newest_under_claude_plugins_dir(tmp_path, monkeypatch):
-    _stage_violation(tmp_path)
-    fake_home = tmp_path.parent / "fake_home"
-    plugin_dir = fake_home / ".claude" / "plugins" / "some-marketplace" / "comment-intent-guard"
+def test_script_discovery_resolves_via_installed_plugins_json(tmp_path):
+    import json
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _stage_violation(repo)
+    fake_home = tmp_path / "fake_home"
+    install_dir = fake_home / ".claude" / "plugins" / "cache" / "some-marketplace" / "comment-intent-guard" / "1.0.0"
+    install_dir.mkdir(parents=True)
+    (install_dir / "comment_intent_guard.py").write_text(
+        (_REPO_ROOT / "comment_intent_guard.py").read_text()
+    )
+    installed_json = fake_home / ".claude" / "plugins" / "installed_plugins.json"
+    installed_json.write_text(json.dumps({
+        "version": 2,
+        "plugins": {
+            "comment-intent-guard@some-marketplace": [
+                {
+                    "scope": "user",
+                    "installPath": str(install_dir),
+                    "version": "1.0.0",
+                    "installedAt": "2026-01-01T00:00:00.000Z",
+                    "lastUpdated": "2026-01-01T00:00:00.000Z",
+                }
+            ]
+        },
+    }))
+    env = {**os.environ, "HOME": str(fake_home)}
+    env.pop("COMMENT_INTENT_GUARD", None)
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+
+    result = subprocess.run(
+        ["bash", str(_PRE_COMMIT_SH)], cwd=repo, capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode != 0
+    assert "bad.py" in result.stdout + result.stderr
+
+
+def test_script_discovery_falls_back_to_newest_under_claude_plugins_cache_dir(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _stage_violation(repo)
+    fake_home = tmp_path / "fake_home"
+    plugin_dir = fake_home / ".claude" / "plugins" / "cache" / "some-marketplace" / "comment-intent-guard" / "1.0.0"
     plugin_dir.mkdir(parents=True)
     (plugin_dir / "comment_intent_guard.py").write_text(
         (_REPO_ROOT / "comment_intent_guard.py").read_text()
@@ -241,11 +306,48 @@ def test_script_discovery_falls_back_to_newest_under_claude_plugins_dir(tmp_path
     env.pop("CLAUDE_PLUGIN_ROOT", None)
 
     result = subprocess.run(
-        ["bash", str(_PRE_COMMIT_SH)], cwd=tmp_path, capture_output=True, text=True, env=env
+        ["bash", str(_PRE_COMMIT_SH)], cwd=repo, capture_output=True, text=True, env=env
     )
 
     assert result.returncode != 0
     assert "bad.py" in result.stdout + result.stderr
+
+
+def test_script_discovery_picks_the_newer_of_two_plugin_candidates(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _stage_violation(repo)
+    fake_home = tmp_path / "fake_home"
+    cache = fake_home / ".claude" / "plugins" / "cache"
+    older_dir = cache / "marketplace-a" / "comment-intent-guard" / "1.0.0"
+    newer_dir = cache / "marketplace-b" / "comment-intent-guard" / "2.0.0"
+    older_dir.mkdir(parents=True)
+    newer_dir.mkdir(parents=True)
+
+    stub = (
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "print('MARKER_{label}: ' + ' '.join(sys.argv[1:]))\n"
+        "sys.exit(1)\n"
+    )
+    (older_dir / "comment_intent_guard.py").write_text(stub.format(label="OLDER"))
+    (newer_dir / "comment_intent_guard.py").write_text(stub.format(label="NEWER"))
+
+    old_time = 1_700_000_000
+    new_time = 1_800_000_000
+    os.utime(older_dir / "comment_intent_guard.py", (old_time, old_time))
+    os.utime(newer_dir / "comment_intent_guard.py", (new_time, new_time))
+
+    env = {**os.environ, "HOME": str(fake_home)}
+    env.pop("COMMENT_INTENT_GUARD", None)
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+
+    result = subprocess.run(
+        ["bash", str(_PRE_COMMIT_SH)], cwd=repo, capture_output=True, text=True, env=env
+    )
+
+    assert "MARKER_NEWER" in result.stdout
+    assert "MARKER_OLDER" not in result.stdout
 
 
 def test_pre_commit_allows_a_clean_staged_python_file(tmp_path):
@@ -253,6 +355,100 @@ def test_pre_commit_allows_a_clean_staged_python_file(tmp_path):
     clean = tmp_path / "good.py"
     clean.write_text("def add(a, b):\n    return a + b\n")
     subprocess.run(["git", "add", "good.py"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["bash", str(pre_commit)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=_guard_env(),
+    )
+
+    assert result.returncode == 0
+
+
+def test_pre_commit_passes_with_a_warning_when_no_discovery_arm_resolves(tmp_path):
+    pre_commit = _init_repo_and_get_pre_commit(tmp_path)
+    violating = tmp_path / "bad.py"
+    violating.write_text('def test_x():\n    """a docstring"""\n')
+    subprocess.run(["git", "add", "bad.py"], cwd=tmp_path, check=True)
+    env = {**os.environ, "HOME": str(tmp_path / "empty_home")}
+    env.pop("COMMENT_INTENT_GUARD", None)
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+
+    result = subprocess.run(
+        ["bash", str(pre_commit)], cwd=tmp_path, capture_output=True, text=True, env=env
+    )
+
+    assert result.returncode == 0
+    assert "could not locate" in result.stderr
+
+
+def test_pre_commit_ignores_a_staged_txt_file_but_checks_a_staged_yaml_file(tmp_path):
+    pre_commit = _init_repo_and_get_pre_commit(tmp_path)
+    (tmp_path / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
+    violating_yaml = tmp_path / "bad.yaml"
+    violating_yaml.write_text("name: x  # 2026-01-01 added this\n")
+    subprocess.run(["git", "add", "notes.txt", "bad.yaml"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["bash", str(pre_commit)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=_guard_env(),
+    )
+
+    assert "notes.txt" not in result.stdout + result.stderr
+    assert "bad.yaml" in result.stdout + result.stderr
+
+
+def test_pre_commit_handles_a_non_ascii_staged_filename(tmp_path):
+    pre_commit = _init_repo_and_get_pre_commit(tmp_path)
+    violating = tmp_path / "café.py"
+    violating.write_text('def test_x():\n    """a docstring"""\n')
+    subprocess.run(["git", "add", "café.py"], cwd=tmp_path, check=True)
+
+    result = subprocess.run(
+        ["bash", str(pre_commit)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=_guard_env(),
+    )
+
+    assert result.returncode == 1
+    assert "café.py" in result.stdout + result.stderr
+    assert "caf\\303\\251.py" not in result.stdout + result.stderr
+
+
+def test_pre_commit_blocks_a_staged_violation_even_when_the_worktree_copy_was_later_fixed(tmp_path):
+    pre_commit = _init_repo_and_get_pre_commit(tmp_path)
+    target = tmp_path / "sneaky.py"
+    target.write_text('def test_x():\n    """a docstring"""\n')
+    subprocess.run(["git", "add", "sneaky.py"], cwd=tmp_path, check=True)
+    # Fix it in the worktree without re-staging - the index still holds the violation.
+    target.write_text("def add(a, b):\n    return a + b\n")
+
+    result = subprocess.run(
+        ["bash", str(pre_commit)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=_guard_env(),
+    )
+
+    assert result.returncode != 0
+    assert "sneaky.py" in result.stdout + result.stderr
+
+
+def test_pre_commit_allows_a_staged_clean_file_even_when_the_worktree_copy_was_later_broken(tmp_path):
+    pre_commit = _init_repo_and_get_pre_commit(tmp_path)
+    target = tmp_path / "sneaky.py"
+    target.write_text("def add(a, b):\n    return a + b\n")
+    subprocess.run(["git", "add", "sneaky.py"], cwd=tmp_path, check=True)
+    # Break it in the worktree without re-staging - the index still holds the clean version.
+    target.write_text('def test_x():\n    """a docstring"""\n')
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
