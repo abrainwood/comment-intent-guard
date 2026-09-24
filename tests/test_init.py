@@ -379,6 +379,20 @@ def _guard_env():
     return {**os.environ, "COMMENT_INTENT_GUARD": str(_REPO_ROOT / "comment_intent_guard.py")}
 
 
+def _stub_guard_env(tmp_path, script_body):
+    stub = tmp_path / "stub_guard.py"
+    stub.write_text(script_body)
+    return stub, {**os.environ, "COMMENT_INTENT_GUARD": str(stub)}
+
+
+def _argv_recording_stub_body(exit_code):
+    return f"import sys\nprint('ARGV:' + ' '.join(sys.argv[1:]))\nsys.exit({exit_code})\n"
+
+
+def _passed_files(stdout):
+    return [a for a in stdout.split("ARGV:", 1)[1].split() if a != "--all"]
+
+
 def _init_repo_and_get_pre_commit(tmp_path):
     _init_tmp_repo(tmp_path)
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
@@ -413,20 +427,16 @@ def test_pre_commit_blocks_a_staged_violating_python_file_and_prints_the_finding
 
 def test_pre_commit_exit_4_from_the_guard_warns_and_passes(tmp_path):
     pre_commit = _init_repo_and_get_pre_commit(tmp_path)
-    invalid_utf8_file = tmp_path / "unreadable.py"
-    invalid_utf8_file.write_bytes(b"\xff\xfe\x00bad-bytes")
-    subprocess.run(["git", "add", "unreadable.py"], cwd=tmp_path, check=True)
+    (tmp_path / "thing.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "thing.py"], cwd=tmp_path, check=True)
+    stub, env = _stub_guard_env(tmp_path, "import sys\nsys.exit(4)\n")
 
     result = subprocess.run(
-        ["bash", str(pre_commit)],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        env=_guard_env(),
+        ["bash", str(pre_commit)], cwd=tmp_path, capture_output=True, text=True, env=env,
     )
 
     assert result.returncode == 0
-    assert str(_REPO_ROOT / "comment_intent_guard.py") in result.stderr
+    assert str(stub) in result.stderr
     assert "Python" in result.stderr
     assert "exited 4" in result.stderr
 
@@ -598,13 +608,14 @@ def test_pre_commit_allows_a_clean_staged_python_file(tmp_path):
     clean = tmp_path / "good.py"
     clean.write_text("def add(a, b):\n    return a + b\n")
     subprocess.run(["git", "add", "good.py"], cwd=tmp_path, check=True)
+    _, env = _stub_guard_env(tmp_path, "import sys\nsys.exit(0)\n")
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        env=_guard_env(),
+        env=env,
     )
 
     assert result.returncode == 0
@@ -613,26 +624,22 @@ def test_pre_commit_allows_a_clean_staged_python_file(tmp_path):
 def test_pre_commit_prints_advisory_findings_and_still_allows_the_commit(tmp_path):
     pre_commit = _init_repo_and_get_pre_commit(tmp_path)
     advisory_only = tmp_path / "config.yaml"
-    advisory_only.write_text(
-        "# first reason for this shape\n"
-        "# second reason for this shape\n"
-        "# third reason for this shape\n"
-        "# fourth reason for this shape\n"
-        "# fifth reason for this shape\n"
-        "key: value\n"
-    )
+    advisory_only.write_text("key: value\n")
     subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    _, env = _stub_guard_env(
+        tmp_path, "print('config.yaml: advisory finding')\nimport sys\nsys.exit(1)\n"
+    )
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        env=_guard_env(),
+        env=env,
     )
 
     assert result.returncode == 0
-    assert "config.yaml" in result.stdout + result.stderr
+    assert "config.yaml: advisory finding" in result.stdout
 
 
 def test_pre_commit_passes_with_a_warning_when_no_discovery_arm_resolves(tmp_path):
@@ -655,20 +662,19 @@ def test_pre_commit_passes_with_a_warning_when_no_discovery_arm_resolves(tmp_pat
 def test_pre_commit_ignores_a_staged_txt_file_but_checks_a_staged_yaml_file(tmp_path):
     pre_commit = _init_repo_and_get_pre_commit(tmp_path)
     (tmp_path / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
-    violating_yaml = tmp_path / "bad.yaml"
-    violating_yaml.write_text("name: x  # 2026-01-01 added this\n")
+    (tmp_path / "bad.yaml").write_text("name: x\n")
     subprocess.run(["git", "add", "notes.txt", "bad.yaml"], cwd=tmp_path, check=True)
+    _, env = _stub_guard_env(tmp_path, _argv_recording_stub_body(1))
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        env=_guard_env(),
+        env=env,
     )
 
-    assert "notes.txt" not in result.stdout + result.stderr
-    assert "bad.yaml" in result.stdout + result.stderr
+    assert _passed_files(result.stdout) == ["bad.yaml"]
 
 
 def test_pre_commit_passes_exactly_the_checked_extensions_to_the_guard(tmp_path):
@@ -693,20 +699,20 @@ def test_pre_commit_passes_exactly_the_checked_extensions_to_the_guard(tmp_path)
 
 def test_pre_commit_handles_a_non_ascii_staged_filename(tmp_path):
     pre_commit = _init_repo_and_get_pre_commit(tmp_path)
-    violating = tmp_path / "café.py"
-    violating.write_text('def test_x():\n    """a docstring"""\n')
+    target = tmp_path / "café.py"
+    target.write_text("x = 1\n")
     subprocess.run(["git", "add", "café.py"], cwd=tmp_path, check=True)
+    _, env = _stub_guard_env(tmp_path, _argv_recording_stub_body(1))
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
         cwd=tmp_path,
         capture_output=True,
         text=True,
-        env=_guard_env(),
+        env=env,
     )
 
-    assert result.returncode == 1
-    assert "café.py" in result.stdout + result.stderr
+    assert _passed_files(result.stdout) == ["café.py"]
     assert "caf\\303\\251.py" not in result.stdout + result.stderr
 
 
