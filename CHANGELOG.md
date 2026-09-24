@@ -26,10 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and resolves the native-hook path on git older than 2.31 - PR #27 (Make
   init per-file and support git older than 2.31), closing issue #24 (init
   refuses everything when .comment-intent-guard.json already differs from
-  the template) and implementing the fallback issue #19 (init.sh
-  native-hook check needs git >= 2.31) describes. Note: issue #19 itself
-  is still open on GitHub despite the fix landing - worth closing
-  separately.
+  the template) and issue #19 (init.sh native-hook check needs git >=
+  2.31).
 
 ### Fixed
 

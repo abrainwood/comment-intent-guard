@@ -158,9 +158,8 @@ as exit code 4; YAML findings are unaffected. CI runs the suite on 3.12,
 3.13, and 3.14.
 
 Any git version. `init.sh` resolves the native-hook path with
-`git rev-parse --git-common-dir`, falling back to a manual
-absolute-path conversion on git older than 2.31 (which lacks
-`--path-format=absolute`).
+`git rev-parse --git-common-dir`, converted to an absolute path by hand,
+so it doesn't need 2.31's `--path-format=absolute`.
 
 ## Mutation testing
 
