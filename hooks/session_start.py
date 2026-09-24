@@ -1,6 +1,14 @@
 #!/usr/bin/env python3
 import json
+import os
 import sys
+import time
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import comment_intent_guard as guard  # noqa: E402
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import stamps  # noqa: E402
 
 _STANZA = "\n".join(
     [
@@ -16,8 +24,25 @@ _STANZA = "\n".join(
 )
 
 
+def _seed_baseline_if_absent(raw_input):
+    try:
+        payload = json.loads(raw_input) if raw_input else {}
+    except json.JSONDecodeError:
+        payload = {}
+    session_key = stamps.session_key_for(payload.get("session_id") if isinstance(payload, dict) else None)
+    path = stamps.stamps_path()
+    all_stamps = stamps.load_stamps(path)
+    if session_key in all_stamps:
+        return
+    stamps.save_stamps(path, session_key, int(time.time()), all_stamps)
+
+
 def main():
-    sys.stdin.read()
+    raw_input = sys.stdin.read()
+    try:
+        _seed_baseline_if_absent(raw_input)
+    except (OSError, ValueError) as exc:
+        guard._warn(f"could not seed session baseline ({type(exc).__name__})", prefix="bash_backstop")
     payload = {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

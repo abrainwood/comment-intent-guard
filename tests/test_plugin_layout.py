@@ -139,3 +139,18 @@ def test_hooks_json_wires_sessionstart_on_startup_resume_and_compact():
     commands = [step["command"] for step in entry["hooks"]]
     assert len(commands) == 1
     assert "${CLAUDE_PLUGIN_ROOT}/hooks/session_start.py" in commands[0]
+
+
+def test_hooks_json_wires_posttooluse_on_bash_via_plugin_root():
+    hooks = json.loads(_HOOKS_JSON.read_text())
+
+    entries = hooks["hooks"]["PostToolUse"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["matcher"] == "Bash"
+
+    commands = [step["command"] for step in entry["hooks"]]
+    assert len(commands) == 1
+    command = commands[0]
+    assert "${CLAUDE_PLUGIN_ROOT}/hooks/bash_backstop.py" in command
+    assert "/Users" not in command
