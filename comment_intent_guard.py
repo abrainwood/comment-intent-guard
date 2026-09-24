@@ -898,11 +898,13 @@ def _extract_added_text(tool_name, tool_input):
 
 
 _STATE_PATH_ENV = "COMMENT_INTENT_GUARD_STATE"
-_DEFAULT_STATE_PATH = os.path.expanduser("~/.claude/hooks/state/comment_guard.json")
 
 
 def _state_path():
-    return os.environ.get(_STATE_PATH_ENV) or _DEFAULT_STATE_PATH
+    override = os.environ.get(_STATE_PATH_ENV)
+    if override:
+        return override
+    return os.path.expanduser("~/.claude/comment-intent-guard/state.json")
 
 
 def _density_findings(session_id, text):
