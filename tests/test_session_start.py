@@ -4,12 +4,10 @@ import json
 import os
 import subprocess
 import sys
-import time
 from pathlib import Path
 
-import pytest
-
 _SCRIPT_PATH = Path(__file__).resolve().parent.parent / "hooks" / "session_start.py"
+_FIXED_CLOCK = 1_700_000_000
 
 
 def _import_session_start():
@@ -40,16 +38,19 @@ def test_session_start_emits_context_naming_the_skill(tmp_path):
     assert "self-documenting-code" in hook_output["additionalContext"]
 
 
-def test_session_start_seeds_a_stamp_for_the_session_id(tmp_path):
+def test_session_start_seeds_a_stamp_for_the_session_id(tmp_path, monkeypatch):
+    module = _import_session_start()
+    monkeypatch.setattr(module.time, "time", lambda: _FIXED_CLOCK)
+    monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
     payload = json.dumps({"session_id": "session-a", "cwd": str(tmp_path), "source": "startup"})
+    monkeypatch.setattr(module.sys, "stdin", io.StringIO(payload))
+    monkeypatch.setattr(module.sys, "stdout", io.StringIO())
 
-    result = _run(payload, tmp_path)
+    module.main()
 
-    assert result.returncode == 0
     stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
     stamps = json.loads(stamps_path.read_text())
-    assert "session-a" in stamps
-    assert stamps["session-a"] == pytest.approx(time.time(), abs=30)
+    assert stamps["session-a"] == _FIXED_CLOCK
 
 
 def test_second_session_start_call_for_the_same_id_leaves_the_stamp_unchanged(tmp_path):
@@ -82,11 +83,13 @@ def test_first_backstop_call_after_a_session_start_seed_reports_a_write(tmp_path
         env=env,
     )
     assert session_result.returncode == 0
+    stamps_path = tmp_path / "state" / "bash_backstop_stamps.json"
+    seeded_stamp = json.loads(stamps_path.read_text())["session-a"]
 
     target = tmp_path / "tests" / "test_thing.py"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text('def test_x():\n    """doc"""\n')
-    future = time.time() + 5
+    future = seeded_stamp + 5
     os.utime(target, (future, future))
 
     backstop_script = _SCRIPT_PATH.parent / "bash_backstop.py"

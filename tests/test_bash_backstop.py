@@ -8,11 +8,11 @@ import sys
 import time
 from pathlib import Path
 
-import pytest
 from conftest import git_repo_template_dir
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_PATH = _REPO_ROOT / "hooks" / "bash_backstop.py"
+_FIXED_CLOCK = 1_700_000_000
 
 
 def _import_bash_backstop():
@@ -33,19 +33,22 @@ def _run_subprocess(payload, env):
     )
 
 
-def _run(payload, env):
+def _run(payload, env, clock=_FIXED_CLOCK):
     module = _import_bash_backstop()
     stdin_backup, stdout_backup, stderr_backup = sys.stdin, sys.stdout, sys.stderr
     state_value = env.get("COMMENT_INTENT_GUARD_STATE")
     env_backup = os.environ.get("COMMENT_INTENT_GUARD_STATE")
+    time_backup = module.time.time
     out, err = io.StringIO(), io.StringIO()
     sys.stdin, sys.stdout, sys.stderr = io.StringIO(json.dumps(payload)), out, err
     if state_value is not None:
         os.environ["COMMENT_INTENT_GUARD_STATE"] = state_value
+    module.time.time = lambda: clock
     try:
         module.main()
     finally:
         sys.stdin, sys.stdout, sys.stderr = stdin_backup, stdout_backup, stderr_backup
+        module.time.time = time_backup
         if env_backup is None:
             os.environ.pop("COMMENT_INTENT_GUARD_STATE", None)
         else:
@@ -99,10 +102,15 @@ def _touch_future(path, seconds=5):
     os.utime(path, (future, future))
 
 
+def _touch_ahead(path, seconds=5, clock=_FIXED_CLOCK):
+    future = clock + seconds
+    os.utime(path, (future, future))
+
+
 def test_second_call_on_a_clean_repo_produces_no_output(tmp_path):
     _init_git_repo(tmp_path)
     untracked = _write(tmp_path, "pkg/untracked.py", '"""fixes #91"""\nVALUE = 1\n')
-    old = time.time() - 100
+    old = _FIXED_CLOCK - 100
     os.utime(untracked, (old, old))
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
@@ -164,10 +172,11 @@ def test_backstop_does_not_re_report_an_unchanged_file_on_the_next_call(tmp_path
     target.write_text('def test_x():\n    """doc"""\n')
     os.utime(target, (edit_stamp, edit_stamp))
 
-    second = _run(payload, env)
+    scan_clock = edit_stamp + 5
+    second = _run(payload, env, clock=scan_clock)
     assert "test_x" in json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
 
-    third = _run(payload, env)
+    third = _run(payload, env, clock=scan_clock)
 
     assert third.stdout == ""
 
@@ -180,14 +189,14 @@ def test_a_different_session_id_is_reported_again(tmp_path):
     assert _run(payload_a, env).stdout == ""
 
     target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    _touch_future(target)
+    _touch_ahead(target)
 
     first = _run(payload_a, env)
     assert json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
 
     baseline_b = _run(payload_b, env)
     assert baseline_b.stdout == ""
-    _touch_future(target, seconds=10)
+    _touch_ahead(target, seconds=10)
 
     second = _run(payload_b, env)
     assert json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
@@ -253,7 +262,7 @@ def test_deleted_tracked_file_does_not_block_reporting_other_violations(tmp_path
 
     tracked.unlink()
     target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    _touch_future(target)
+    _touch_ahead(target)
 
     result = _run(payload, env)
 
@@ -269,7 +278,7 @@ def test_non_ascii_filename_is_reported_as_a_bright_line(tmp_path):
     assert _run(payload, env).stdout == ""
 
     target = _write(tmp_path, "tests/tést_ü.py", 'def test_x():\n    """doc"""\n')
-    _touch_future(target)
+    _touch_ahead(target)
 
     result = _run(payload, env)
 
@@ -382,7 +391,7 @@ def test_clean_line_appended_to_a_file_with_a_preexisting_advisory_produces_no_o
 
     with tracked.open("a") as handle:
         handle.write("VALUE = 1\n")
-    _touch_future(tracked)
+    _touch_ahead(tracked)
 
     result = _run(payload, env)
 
@@ -401,7 +410,7 @@ def test_violating_line_appended_to_a_tracked_file_reports_the_new_finding_witho
 
     with tracked.open("a") as handle:
         handle.write("# updated on 2026-09-24 with a new fix\nVALUE = 1\n")
-    _touch_future(tracked)
+    _touch_ahead(tracked)
 
     result = _run(payload, env)
 
@@ -426,10 +435,10 @@ def test_partial_write_to_the_stamps_file_is_rewritten_as_valid_json_on_the_next
 
     assert result.returncode == 0
     assert result.stdout == ""
-    assert json.loads(stamps_path.read_text()) == {"session-a": pytest.approx(time.time(), abs=30)}
+    assert json.loads(stamps_path.read_text()) == {"session-a": _FIXED_CLOCK}
 
     target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    _touch_future(target)
+    _touch_ahead(target)
     second = _run(payload, env)
 
     assert "test_x" in json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
@@ -506,7 +515,7 @@ def test_modified_tracked_file_is_reported_as_a_bright_line(tmp_path):
     assert _run(payload, env).stdout == ""
 
     tracked.write_text('def test_x():\n    """doc"""\n')
-    _touch_future(tracked)
+    _touch_ahead(tracked)
 
     result = _run(payload, env)
 
@@ -524,7 +533,7 @@ def test_cwd_in_subdirectory_of_repo_still_finds_changes(tmp_path):
     assert _run(payload, env).stdout == ""
 
     target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    _touch_future(target)
+    _touch_ahead(target)
 
     result = _run(payload, env)
 
@@ -563,7 +572,7 @@ def test_advisory_only_file_appears_without_a_bright_line_tag(tmp_path):
 
     with tracked.open("a") as handle:
         handle.write("# updated on 2026-09-24 with a new fix\nVALUE = 1\n")
-    _touch_future(tracked)
+    _touch_ahead(tracked)
 
     result = _run(payload, env)
 
@@ -582,6 +591,7 @@ def _git_call_count_for_a_modified_candidate_scan(repo_dir, monkeypatch, file_co
     subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "add modules"], cwd=repo_dir, check=True)
     module = _import_bash_backstop()
+    monkeypatch.setattr(module.time, "time", lambda: _FIXED_CLOCK)
     payload = {"session_id": "session-a", "cwd": str(repo_dir), "tool_name": "Bash", "tool_input": {}}
     monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(repo_dir / "state" / "state.json"))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
@@ -591,7 +601,7 @@ def _git_call_count_for_a_modified_candidate_scan(repo_dir, monkeypatch, file_co
         target = repo_dir / "pkg" / f"module_{n}.py"
         target.write_text(f"VALUE_{n} = {n + 1}\n")
     for target in (repo_dir / "pkg").glob("*.py"):
-        _touch_future(target)
+        _touch_ahead(target)
 
     real_run = subprocess.run
     call_count = 0
@@ -621,11 +631,12 @@ def test_backstop_reports_blocking_findings_from_an_unanalyzable_file(tmp_path, 
     _init_git_repo(tmp_path)
     target = _write(tmp_path, "pkg/tracked.py", "pass\n")
     module = _import_bash_backstop()
+    monkeypatch.setattr(module.time, "time", lambda: _FIXED_CLOCK)
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
     module._run()
-    _touch_future(target)
+    _touch_ahead(target)
 
     def _raise_unavailable(file_path, text):
         exc = module.guard.AnalysisUnavailable("could not analyze")
@@ -692,7 +703,7 @@ def test_missing_session_id_still_tracks_a_baseline_stamp_and_stops_reporting_on
     assert _run(payload, env).stdout == ""
 
     target = _write(tmp_path, "tests/test_thing.py", 'def test_x():\n    """doc"""\n')
-    _touch_future(target)
+    _touch_ahead(target)
     first = _run(payload, env)
     assert first.returncode == 0
     assert "test_x" in json.loads(first.stdout)["hookSpecificOutput"]["additionalContext"]
@@ -715,7 +726,7 @@ def test_heredoc_written_yaml_with_an_issue_reference_is_reported_as_a_bright_li
     assert baseline.stdout == ""
 
     target = _write(tmp_path, "config/thing.yaml", "# fixes #482 by capping retries\nkey: value\n")
-    _touch_future(target)
+    _touch_ahead(target)
 
     result = _run(payload, env)
 
@@ -737,7 +748,7 @@ def test_tracked_file_with_a_space_in_its_name_is_reported(tmp_path):
 
     with target.open("a") as handle:
         handle.write("# updated on 2026-09-24 with a fix (issue #482)\nVALUE = 1\n")
-    _touch_future(target)
+    _touch_ahead(target)
 
     result = _run(payload, env)
 
@@ -762,7 +773,7 @@ def test_added_line_starting_with_plus_plus_does_not_break_a_later_hunk(tmp_path
     lines.insert(1, "++ this looks like a diff header but is not")
     lines.append("# updated on 2026-09-24 with a fix")
     target.write_text("\n".join(lines) + "\n")
-    _touch_future(target)
+    _touch_ahead(target)
 
     result = _run(payload, env)
 
@@ -780,8 +791,9 @@ def test_candidate_missing_from_disk_warns_with_its_path(tmp_path, monkeypatch, 
     subprocess.run(["git", "commit", "-q", "-m", "add gone"], cwd=tmp_path, check=True)
     with target.open("a") as handle:
         handle.write("VALUE = 1\n")
-    _touch_future(target)
+    _touch_ahead(target)
     module = _import_bash_backstop()
+    monkeypatch.setattr(module.time, "time", lambda: _FIXED_CLOCK)
     payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
     monkeypatch.setenv("COMMENT_INTENT_GUARD_STATE", str(tmp_path / "state" / "state.json"))
     monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
@@ -824,7 +836,7 @@ def test_heredoc_written_jinja_with_an_issue_reference_is_reported_as_a_bright_l
     assert baseline.stdout == ""
 
     target = _write(tmp_path, "templates/thing.jinja", "{# fixes #482 by capping retries #}\nkey: {{ value }}\n")
-    _touch_future(target)
+    _touch_ahead(target)
 
     result = _run(payload, env)
 
