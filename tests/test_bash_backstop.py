@@ -345,3 +345,37 @@ def test_partial_write_to_the_stamps_file_does_not_break_the_next_run(tmp_path):
     second = _run(payload, env)
 
     assert "test_x" in json.loads(second.stdout)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_build_message_caps_at_40_findings_with_a_more_findings_note():
+    module = _import_bash_backstop()
+    lines = [f"finding {n}" for n in range(45)]
+
+    message = module._build_message(lines)
+
+    assert message.count("finding ") == 40
+    assert "... and 5 more findings" in message
+
+
+def test_build_message_with_exactly_40_findings_has_no_more_findings_note():
+    module = _import_bash_backstop()
+    lines = [f"finding {n}" for n in range(40)]
+
+    message = module._build_message(lines)
+
+    assert message.count("finding ") == 40
+    assert "more findings" not in message
+
+
+def test_build_message_caps_by_byte_budget_even_under_40_findings():
+    module = _import_bash_backstop()
+    finding_byte_size = 500
+    finding_count = 10
+    lines = ["x" * finding_byte_size for _ in range(finding_count)]
+    trailer_note_headroom = 64
+    assert finding_byte_size * finding_count > module._MAX_MESSAGE_BYTES
+
+    message = module._build_message(lines)
+
+    assert len(message.encode("utf-8")) <= module._MAX_MESSAGE_BYTES + trailer_note_headroom
+    assert "more findings" in message

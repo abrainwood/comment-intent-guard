@@ -12,6 +12,8 @@ import comment_intent_guard as guard  # noqa: E402
 _TRACKED_GLOBS = ["*.py", "*.yaml", "*.yml", "*.jinja", "*.j2"]
 _MAX_CANDIDATES = 200
 _GIT_TIMEOUT_SECONDS = 5
+_MAX_FINDINGS = 40
+_MAX_MESSAGE_BYTES = 4096
 
 
 def _stamps_path():
@@ -83,6 +85,29 @@ def _findings_message(file_path, blocking, advisory):
     lines = [f"{file_path}: BRIGHT LINE - {message}" for message, _ in blocking]
     lines += [f"{file_path}: {message}" for message, _ in advisory]
     return lines
+
+
+def _build_message(lines):
+    header = "COMMENT INTENT CHECK (Bash backstop):\n\n"
+    capped = lines[:_MAX_FINDINGS]
+    omitted = len(lines) - len(capped)
+
+    budget = _MAX_MESSAGE_BYTES - len(header.encode("utf-8"))
+    kept = []
+    used = 0
+    for line in capped:
+        piece = line if not kept else "\n\n" + line
+        size = len(piece.encode("utf-8"))
+        if used + size > budget:
+            omitted += len(capped) - len(kept)
+            break
+        kept.append(line)
+        used += size
+
+    message = header + "\n\n".join(kept)
+    if omitted:
+        message += f"\n\n... and {omitted} more findings"
+    return message
 
 
 def main():
@@ -160,7 +185,7 @@ def _run():
     if not lines:
         return
 
-    message = "COMMENT INTENT CHECK (Bash backstop):\n\n" + "\n\n".join(lines)
+    message = _build_message(lines)
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
