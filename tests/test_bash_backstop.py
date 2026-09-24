@@ -569,3 +569,22 @@ def test_missing_session_id_still_tracks_a_baseline_stamp(tmp_path):
     third = _run(payload, env)
 
     assert third.stdout == ""
+
+
+def test_heredoc_written_yaml_with_an_issue_reference_is_reported_as_a_bright_line(tmp_path):
+    _init_git_repo(tmp_path)
+    payload = {"session_id": "session-a", "cwd": str(tmp_path), "tool_name": "Bash", "tool_input": {}}
+    env = dict(os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state" / "state.json"))
+    baseline = _run(payload, env)
+    assert baseline.stdout == ""
+
+    target = _write(tmp_path, "config/thing.yaml", "# fixes #482 by capping retries\nkey: value\n")
+    _touch_future(target)
+
+    result = _run(payload, env)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "BRIGHT LINE" in context
+    assert "thing.yaml" in context
