@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
-from conftest import _FIXED_CLOCK
+from _clock import FIXED_CLOCK as _FIXED_CLOCK
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SCRIPT_PATH = _REPO_ROOT / "hooks" / "bash_backstop.py"
@@ -35,8 +35,9 @@ def _run_subprocess(payload, env):
 
 @pytest.fixture
 def run_backstop(monkeypatch):
+    module = _import_bash_backstop()
+
     def _call(payload, state_path, clock=_FIXED_CLOCK):
-        module = _import_bash_backstop()
         monkeypatch.setattr(module.sys, "stdin", io.StringIO(json.dumps(payload)))
         stdout = io.StringIO()
         monkeypatch.setattr(module.sys, "stdout", stdout)
@@ -52,6 +53,19 @@ def _write(path, relpath, content):
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content)
     return target
+
+
+def test_main_prints_the_exception_type_and_message_to_stderr_instead_of_crashing(monkeypatch, capsys):
+    module = _import_bash_backstop()
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(module, "_run", _raise)
+
+    module.main()
+
+    assert "bash_backstop: RuntimeError:" in capsys.readouterr().err
 
 
 def test_non_git_cwd_produces_no_output(tmp_path):

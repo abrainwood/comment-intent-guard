@@ -3,8 +3,6 @@ import subprocess
 
 import pytest
 
-_FIXED_CLOCK = 1_700_000_000.75
-
 
 @pytest.fixture(scope="session")
 def git_repo_template(tmp_path_factory):

@@ -25,7 +25,9 @@ def test_restamping_and_eviction_respect_the_session_cap(tmp_path, monkeypatch):
     module.save_stamps(path, "session-0", 3, stamps)
     module.save_stamps(path, "session-3", 4, stamps)
 
-    assert json.loads(Path(path).read_text()) == {"session-2": 2, "session-0": 3, "session-3": 4}
+    on_disk = json.loads(Path(path).read_text())
+    assert on_disk == {"session-2": 2, "session-0": 3, "session-3": 4}
+    assert list(on_disk) == ["session-2", "session-0", "session-3"]
 
 
 def test_load_stamps_warns_with_the_bash_backstop_prefix_on_a_corrupt_file(tmp_path, capsys):
