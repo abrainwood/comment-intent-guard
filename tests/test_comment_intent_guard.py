@@ -203,6 +203,42 @@ def test_e2e_write_yaml_file_with_oversize_hash_run_emits_advisory_never_deny():
     assert "permissionDecision" not in output["hookSpecificOutput"]
 
 
+def test_hook_advises_on_an_oversize_comment_run_in_a_yml_file():
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"# reason {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/zones.yml",
+            "content": f"{prose_lines}\nkey: value\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_hook_advises_on_an_oversize_jinja_comment_in_a_j2_file():
+    body = "\n".join(f"  reason {i}" for i in range(guard.JINJA_BLOCK_LINE_THRESHOLD + 1))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.j2",
+            "content": f"{{#\n{body}\n#}}\n{{{{ value }}}}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    assert "Jinja" in context and "block" in context
+
+
 def test_e2e_edit_yaml_file_only_analyses_the_new_string_fragment():
     payload = {
         "tool_name": "Edit",
