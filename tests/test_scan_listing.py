@@ -312,7 +312,9 @@ def test_added_line_numbers_map_degrades_every_file_in_the_group_on_diff_timeout
     monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.5)
 
     started_at = time.monotonic()
-    result = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+    result = guard._added_line_numbers_map(
+        "HEAD", [str(target) for target in targets], repo_root=str(git_repo), files_are_tracked=True
+    )
     elapsed = time.monotonic() - started_at
 
     assert result == {str(target): None for target in targets}
