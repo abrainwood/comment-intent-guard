@@ -257,7 +257,7 @@ def test_doc_comment_before_two_chained_block_comments_does_not_name_a_method_in
     assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 5), (5, 5))]
 
 
-def test_doc_comment_before_an_attribute_where_the_comment_close_line_has_trailing_real_code_names_the_method_not_the_close_line_text():
+def test_doc_comment_before_a_comment_closing_with_trailing_real_code_names_the_method():
     text = (
         "/// <summary>Checks the thing.</summary>\n"
         "[Fact] /* start\n"
@@ -271,7 +271,7 @@ def test_doc_comment_before_an_attribute_where_the_comment_close_line_has_traili
     assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
 
 
-def test_doc_comment_before_an_attribute_where_the_comment_close_line_has_a_trailing_attribute_and_code_names_the_method_not_the_attribute():
+def test_doc_comment_before_a_comment_closing_with_a_trailing_attribute_and_code_names_the_method():
     text = (
         "/// <summary>Checks the thing.</summary>\n"
         "[Fact] /* a\n"
