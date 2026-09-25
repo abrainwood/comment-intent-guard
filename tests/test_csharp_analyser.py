@@ -1499,28 +1499,32 @@ def test_same_named_documented_test_methods_in_different_classes_are_each_blocke
 @pytest.mark.parametrize(
     ("text", "expected"),
     [
-        pytest.param(" // note", True, id="line_comment_only"),
-        pytest.param(" /* note */", True, id="block_comment_only"),
-        pytest.param(" public void T()", False, id="real_code_only"),
-        pytest.param(" public void T() // note", False, id="real_code_then_line_comment"),
-        pytest.param(" public void T() /* note */", False, id="real_code_then_block_comment"),
-        pytest.param(" /* note */   ", True, id="block_comment_then_trailing_whitespace"),
-        pytest.param(" /* a */ /* b */", True, id="two_block_comments"),
-        pytest.param("  code   /* note */", False, id="real_code_then_block_comment_with_gap"),
-        pytest.param("code */", False, id="bare_close_with_no_open_is_real_code"),
-        pytest.param("code", False, id="real_code_no_comment"),
-        pytest.param("  code   // note", False, id="real_code_then_line_comment_with_gap"),
-        pytest.param("code // a // b", False, id="real_code_then_line_comment_containing_slashes"),
-        pytest.param(" /* a */ // b", True, id="block_then_line_comment"),
-        pytest.param(" // a /* b */", True, id="line_comment_containing_block_syntax"),
-        pytest.param(" // see */", True, id="line_comment_containing_bare_close"),
-        pytest.param(" /* unterminated", True, id="unterminated_block_comment"),
-        pytest.param("", True, id="empty_text"),
-        pytest.param(" /*/ code", True, id="close_marker_overlapping_the_open_marker_is_not_a_close"),
-        pytest.param(" /* a */ code /* b */", False, id="real_code_between_two_block_comments"),
-        pytest.param(" /**/code", False, id="minimal_block_comment_then_code"),
-        pytest.param(" /* a */// note", True, id="block_comment_immediately_followed_by_line_comment"),
+        pytest.param(" // note", "", id="line_comment_only"),
+        pytest.param(" /* note */", "", id="block_comment_only"),
+        pytest.param(" public void T()", "public void T()", id="real_code_only"),
+        pytest.param(" public void T() // note", "public void T() // note", id="real_code_then_line_comment"),
+        pytest.param(
+            " public void T() /* note */", "public void T() /* note */", id="real_code_then_block_comment"
+        ),
+        pytest.param(" /* note */   ", "", id="block_comment_then_trailing_whitespace"),
+        pytest.param(" /* a */ /* b */", "", id="two_block_comments"),
+        pytest.param("  code   /* note */", "code   /* note */", id="real_code_then_block_comment_with_gap"),
+        pytest.param("code */", "code */", id="bare_close_with_no_open_is_real_code"),
+        pytest.param("code", "code", id="real_code_no_comment"),
+        pytest.param("  code   // note", "code   // note", id="real_code_then_line_comment_with_gap"),
+        pytest.param(
+            "code // a // b", "code // a // b", id="real_code_then_line_comment_containing_slashes"
+        ),
+        pytest.param(" /* a */ // b", "", id="block_then_line_comment"),
+        pytest.param(" // a /* b */", "", id="line_comment_containing_block_syntax"),
+        pytest.param(" // see */", "", id="line_comment_containing_bare_close"),
+        pytest.param(" /* unterminated", "", id="unterminated_block_comment"),
+        pytest.param("", "", id="empty_text"),
+        pytest.param(" /*/ code", "", id="close_marker_overlapping_the_open_marker_is_not_a_close"),
+        pytest.param(" /* a */ code /* b */", "code /* b */", id="real_code_between_two_block_comments"),
+        pytest.param(" /**/code", "code", id="minimal_block_comment_then_code"),
+        pytest.param(" /* a */// note", "", id="block_comment_immediately_followed_by_line_comment"),
     ],
 )
-def test_attribute_remainder_that_is_only_comments_is_ignored(text, expected):
-    assert (guard._csharp_skip_comments([text], 0, text)[1] == "") == expected
+def test_skip_comments_consumes_text_that_is_only_comments(text, expected):
+    assert guard._csharp_skip_comments([text], 0, text)[1] == expected
