@@ -14,21 +14,23 @@ def _init_tmp_repo(git_repo):
     )
 
 
-def test_fresh_repo_gets_all_four_files_with_hookspath_set_and_pre_commit_executable(git_repo):
-    result = _init_tmp_repo(git_repo)
+def test_bare_repo_gets_all_four_files_with_hookspath_set_and_pre_commit_executable(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+
+    result = _init_tmp_repo(tmp_path)
 
     assert result.returncode == 0
-    assert (git_repo / ".comment-intent-guard.json").exists()
-    assert (git_repo / ".githooks" / "pre-commit").exists()
-    assert (git_repo / ".github" / "workflows" / "comment-guard.yml").exists()
-    assert (git_repo / "CLAUDE.md").exists()
+    assert (tmp_path / ".comment-intent-guard.json").exists()
+    assert (tmp_path / ".githooks" / "pre-commit").exists()
+    assert (tmp_path / ".github" / "workflows" / "comment-guard.yml").exists()
+    assert (tmp_path / "CLAUDE.md").exists()
 
     hooks_path = subprocess.run(
-        ["git", "config", "core.hooksPath"], cwd=git_repo, capture_output=True, text=True, check=True
+        ["git", "config", "core.hooksPath"], cwd=tmp_path, capture_output=True, text=True, check=True
     )
     assert hooks_path.stdout.strip() == ".githooks"
 
-    pre_commit = git_repo / ".githooks" / "pre-commit"
+    pre_commit = tmp_path / ".githooks" / "pre-commit"
     assert pre_commit.stat().st_mode & 0o111
 
     assert ".comment-intent-guard.json created" in result.stdout
@@ -36,6 +38,18 @@ def test_fresh_repo_gets_all_four_files_with_hookspath_set_and_pre_commit_execut
     assert ".github/workflows/comment-guard.yml created" in result.stdout
     assert "CLAUDE.md created" in result.stdout
     assert "core.hooksPath set to .githooks" in result.stdout
+
+
+def test_pre_commit_sh_blocks_a_staged_violation_in_a_bare_repo(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    _stage_violation(tmp_path)
+
+    result = subprocess.run(
+        ["bash", str(_PRE_COMMIT_SH)], cwd=tmp_path, capture_output=True, text=True, env=_guard_env()
+    )
+
+    assert result.returncode != 0
+    assert "bad.py" in result.stdout + result.stderr
 
 
 def test_second_run_reports_every_file_as_unchanged(git_repo):
@@ -153,12 +167,11 @@ def _write_git_2_26_rev_parse_shim(bin_dir):
     shim.chmod(0o755)
 
 
-def test_native_hook_check_works_when_git_garbles_the_unrecognized_path_format_flag(tmp_path, git_repo_template):
+def test_native_hook_check_works_when_git_garbles_the_unrecognized_path_format_flag(tmp_path, git_repo):
     bin_dir = tmp_path / "oldgitbin"
     bin_dir.mkdir()
     _write_git_2_26_rev_parse_shim(bin_dir)
-    repo = tmp_path / "repo"
-    shutil.copytree(git_repo_template, repo)
+    repo = git_repo
     native_hook = repo / ".git" / "hooks" / "pre-commit"
     native_hook.write_text("#!/bin/sh\necho native\n")
     env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}"}
@@ -172,9 +185,8 @@ def test_native_hook_check_works_when_git_garbles_the_unrecognized_path_format_f
     assert not (repo / ".comment-intent-guard.json").exists()
 
 
-def test_native_hook_check_sees_a_linked_worktrees_shared_hooks_dir(tmp_path, git_repo_template):
-    main_repo = tmp_path / "main"
-    shutil.copytree(git_repo_template, main_repo)
+def test_native_hook_check_sees_a_linked_worktrees_shared_hooks_dir(tmp_path, git_repo):
+    main_repo = git_repo
     native_hook = main_repo / ".git" / "hooks" / "pre-commit"
     native_hook.write_text("#!/bin/sh\necho native\n")
     worktree = tmp_path / "worktree"
@@ -429,27 +441,15 @@ def _passed_files(stdout):
     return [a for a in stdout.split("ARGV:", 1)[1].split() if a != "--all"]
 
 
-def _init_repo_and_get_pre_commit(git_repo):
-    _init_tmp_repo(git_repo)
-    subprocess.run(["git", "add", "."], cwd=git_repo, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "init"],
-        cwd=git_repo,
-        check=True,
-        env=_guard_env(),
-    )
-    return git_repo / ".githooks" / "pre-commit"
-
-
-def test_pre_commit_blocks_a_staged_violating_python_file_and_prints_the_finding(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    violating = git_repo / "bad.py"
+def test_pre_commit_blocks_a_staged_violating_python_file_and_prints_the_finding(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    violating = initialised_repo / "bad.py"
     violating.write_text('def test_x():\n    """a docstring"""\n')
-    subprocess.run(["git", "add", "bad.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "add", "bad.py"], cwd=initialised_repo, check=True)
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
-        cwd=git_repo,
+        cwd=initialised_repo,
         capture_output=True,
         text=True,
         env=_guard_env(),
@@ -461,14 +461,14 @@ def test_pre_commit_blocks_a_staged_violating_python_file_and_prints_the_finding
     assert "commit aborted" in result.stderr
 
 
-def test_pre_commit_exit_4_from_the_guard_warns_and_passes(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    (git_repo / "thing.py").write_text("VALUE = 1\n")
-    subprocess.run(["git", "add", "thing.py"], cwd=git_repo, check=True)
-    stub, env = _stub_guard_env(git_repo, "import sys\nsys.exit(4)\n")
+def test_pre_commit_exit_4_from_the_guard_warns_and_passes(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    (initialised_repo / "thing.py").write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "thing.py"], cwd=initialised_repo, check=True)
+    stub, env = _stub_guard_env(initialised_repo, "import sys\nsys.exit(4)\n")
 
     result = subprocess.run(
-        ["bash", str(pre_commit)], cwd=git_repo, capture_output=True, text=True, env=env,
+        ["bash", str(pre_commit)], cwd=initialised_repo, capture_output=True, text=True, env=env,
     )
 
     assert result.returncode == 0
@@ -633,17 +633,17 @@ def test_script_discovery_picks_the_newer_of_two_plugin_candidates(tmp_path, git
     assert "MARKER_OLDER" not in result.stdout
 
 
-def test_pre_commit_allows_a_clean_staged_python_file(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    clean = git_repo / "good.py"
+def test_pre_commit_allows_a_clean_staged_python_file(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    clean = initialised_repo / "good.py"
     clean.write_text("def add(a, b):\n    return a + b\n")
-    subprocess.run(["git", "add", "good.py"], cwd=git_repo, check=True)
-    argv_log = git_repo / "argv.log"
-    _, env = _stub_guard_env(git_repo, _argv_file_recording_stub_body(argv_log))
+    subprocess.run(["git", "add", "good.py"], cwd=initialised_repo, check=True)
+    argv_log = initialised_repo / "argv.log"
+    _, env = _stub_guard_env(initialised_repo, _argv_file_recording_stub_body(argv_log))
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
-        cwd=git_repo,
+        cwd=initialised_repo,
         capture_output=True,
         text=True,
         env=env,
@@ -654,18 +654,18 @@ def test_pre_commit_allows_a_clean_staged_python_file(git_repo):
     assert passed == ["good.py"]
 
 
-def test_pre_commit_prints_advisory_findings_and_still_allows_the_commit(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    advisory_only = git_repo / "config.yaml"
+def test_pre_commit_prints_advisory_findings_and_still_allows_the_commit(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    advisory_only = initialised_repo / "config.yaml"
     advisory_only.write_text("key: value\n")
-    subprocess.run(["git", "add", "config.yaml"], cwd=git_repo, check=True)
+    subprocess.run(["git", "add", "config.yaml"], cwd=initialised_repo, check=True)
     _, env = _stub_guard_env(
-        git_repo, "print('config.yaml: advisory finding')\nimport sys\nsys.exit(1)\n"
+        initialised_repo, "print('config.yaml: advisory finding')\nimport sys\nsys.exit(1)\n"
     )
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
-        cwd=git_repo,
+        cwd=initialised_repo,
         capture_output=True,
         text=True,
         env=env,
@@ -675,33 +675,33 @@ def test_pre_commit_prints_advisory_findings_and_still_allows_the_commit(git_rep
     assert "config.yaml: advisory finding" in result.stdout
 
 
-def test_pre_commit_passes_with_a_warning_when_no_discovery_arm_resolves(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    violating = git_repo / "bad.py"
+def test_pre_commit_passes_with_a_warning_when_no_discovery_arm_resolves(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    violating = initialised_repo / "bad.py"
     violating.write_text('def test_x():\n    """a docstring"""\n')
-    subprocess.run(["git", "add", "bad.py"], cwd=git_repo, check=True)
-    env = {**os.environ, "HOME": str(git_repo / "empty_home")}
+    subprocess.run(["git", "add", "bad.py"], cwd=initialised_repo, check=True)
+    env = {**os.environ, "HOME": str(initialised_repo / "empty_home")}
     env.pop("COMMENT_INTENT_GUARD", None)
     env.pop("CLAUDE_PLUGIN_ROOT", None)
 
     result = subprocess.run(
-        ["bash", str(pre_commit)], cwd=git_repo, capture_output=True, text=True, env=env
+        ["bash", str(pre_commit)], cwd=initialised_repo, capture_output=True, text=True, env=env
     )
 
     assert result.returncode == 0
     assert "could not locate" in result.stderr
 
 
-def test_pre_commit_ignores_a_staged_txt_file_but_checks_a_staged_yaml_file(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    (git_repo / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
-    (git_repo / "bad.yaml").write_text("name: x\n")
-    subprocess.run(["git", "add", "notes.txt", "bad.yaml"], cwd=git_repo, check=True)
-    _, env = _stub_guard_env(git_repo, _argv_recording_stub_body(1))
+def test_pre_commit_ignores_a_staged_txt_file_but_checks_a_staged_yaml_file(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    (initialised_repo / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
+    (initialised_repo / "bad.yaml").write_text("name: x\n")
+    subprocess.run(["git", "add", "notes.txt", "bad.yaml"], cwd=initialised_repo, check=True)
+    _, env = _stub_guard_env(initialised_repo, _argv_recording_stub_body(1))
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
-        cwd=git_repo,
+        cwd=initialised_repo,
         capture_output=True,
         text=True,
         env=env,
@@ -726,16 +726,16 @@ def test_pre_commit_passes_exactly_the_checked_extensions_to_the_guard(git_repo)
     assert set(_passed_files(result.stdout)) == set(checked)
 
 
-def test_pre_commit_handles_a_non_ascii_staged_filename(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    target = git_repo / "café.py"
+def test_pre_commit_handles_a_non_ascii_staged_filename(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    target = initialised_repo / "café.py"
     target.write_text("x = 1\n")
-    subprocess.run(["git", "add", "café.py"], cwd=git_repo, check=True)
-    _, env = _stub_guard_env(git_repo, _argv_recording_stub_body(1))
+    subprocess.run(["git", "add", "café.py"], cwd=initialised_repo, check=True)
+    _, env = _stub_guard_env(initialised_repo, _argv_recording_stub_body(1))
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
-        cwd=git_repo,
+        cwd=initialised_repo,
         capture_output=True,
         text=True,
         env=env,
@@ -745,16 +745,16 @@ def test_pre_commit_handles_a_non_ascii_staged_filename(git_repo):
     assert "caf\\303\\251.py" not in result.stdout + result.stderr
 
 
-def test_pre_commit_blocks_a_staged_violation_even_when_the_worktree_copy_was_later_fixed(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    staged_then_fixed = git_repo / "sneaky.py"
+def test_pre_commit_blocks_a_staged_violation_even_when_the_worktree_copy_was_later_fixed(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    staged_then_fixed = initialised_repo / "sneaky.py"
     staged_then_fixed.write_text('def test_x():\n    """a docstring"""\n')
-    subprocess.run(["git", "add", "sneaky.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "add", "sneaky.py"], cwd=initialised_repo, check=True)
     staged_then_fixed.write_text("def add(a, b):\n    return a + b\n")
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
-        cwd=git_repo,
+        cwd=initialised_repo,
         capture_output=True,
         text=True,
         env=_guard_env(),
@@ -764,17 +764,17 @@ def test_pre_commit_blocks_a_staged_violation_even_when_the_worktree_copy_was_la
     assert "sneaky.py" in result.stdout + result.stderr
 
 
-def test_pre_commit_honors_a_staged_id_prefix_allowlist_for_a_filename_id_token(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    config = git_repo / ".comment-intent-guard.json"
+def test_pre_commit_honors_a_staged_id_prefix_allowlist_for_a_filename_id_token(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    config = initialised_repo / ".comment-intent-guard.json"
     config.write_text(json.dumps({"id_prefix_allowlist": ["abc"]}))
-    allowed = git_repo / "abc12.py"
+    allowed = initialised_repo / "abc12.py"
     allowed.write_text("def add(a, b):\n    return a + b\n")
-    subprocess.run(["git", "add", ".comment-intent-guard.json", "abc12.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "add", ".comment-intent-guard.json", "abc12.py"], cwd=initialised_repo, check=True)
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
-        cwd=git_repo,
+        cwd=initialised_repo,
         capture_output=True,
         text=True,
         env=_guard_env(),
@@ -783,16 +783,16 @@ def test_pre_commit_honors_a_staged_id_prefix_allowlist_for_a_filename_id_token(
     assert result.returncode == 0
 
 
-def test_pre_commit_allows_a_staged_clean_file_even_when_the_worktree_copy_was_later_broken(git_repo):
-    pre_commit = _init_repo_and_get_pre_commit(git_repo)
-    staged_then_broken = git_repo / "sneaky.py"
+def test_pre_commit_allows_a_staged_clean_file_even_when_the_worktree_copy_was_later_broken(initialised_repo):
+    pre_commit = initialised_repo / ".githooks" / "pre-commit"
+    staged_then_broken = initialised_repo / "sneaky.py"
     staged_then_broken.write_text("def add(a, b):\n    return a + b\n")
-    subprocess.run(["git", "add", "sneaky.py"], cwd=git_repo, check=True)
+    subprocess.run(["git", "add", "sneaky.py"], cwd=initialised_repo, check=True)
     staged_then_broken.write_text('def test_x():\n    """a docstring"""\n')
 
     result = subprocess.run(
         ["bash", str(pre_commit)],
-        cwd=git_repo,
+        cwd=initialised_repo,
         capture_output=True,
         text=True,
         env=_guard_env(),

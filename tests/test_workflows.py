@@ -46,30 +46,38 @@ def _bash_with_mapfile():
 _BASH = _bash_with_mapfile()
 
 
-def _init_gate_test_repo(tmp_path):
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=tmp_path, check=True)
-    (tmp_path / "base.py").write_text("x = 1\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
-    subprocess.run(["git", "branch", "origin/main"], cwd=tmp_path, check=True)
-    (tmp_path / "thing.py").write_text("y = 2\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "change"], cwd=tmp_path, check=True)
-    checkout_dir = tmp_path / ".comment-intent-guard-checkout"
+@pytest.fixture(scope="session")
+def gate_test_repo_template(tmp_path_factory):
+    template = tmp_path_factory.mktemp("gate_test_repo_template")
+    subprocess.run(["git", "init", "-q"], cwd=template, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=template, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=template, check=True)
+    (template / "base.py").write_text("x = 1\n")
+    subprocess.run(["git", "add", "."], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=template, check=True)
+    subprocess.run(["git", "branch", "origin/main"], cwd=template, check=True)
+    (template / "thing.py").write_text("y = 2\n")
+    subprocess.run(["git", "add", "."], cwd=template, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "change"], cwd=template, check=True)
+    return template
+
+
+def _init_gate_test_repo(tmp_path, template):
+    repo = tmp_path / "repo"
+    shutil.copytree(template, repo)
+    checkout_dir = repo / ".comment-intent-guard-checkout"
     checkout_dir.mkdir()
-    return checkout_dir / "comment_intent_guard.py"
+    return repo, checkout_dir / "comment_intent_guard.py"
 
 
-def _run_gate_step_with_stub_guard(tmp_path, stub_body):
-    stub_path = _init_gate_test_repo(tmp_path)
+def _run_gate_step_with_stub_guard(tmp_path, template, stub_body):
+    repo, stub_path = _init_gate_test_repo(tmp_path, template)
     stub_path.write_text(stub_body)
     script = _run_step_script(_load_gate())
     env = dict(os.environ, BASE_REF="main", PATHS="*.py")
     return subprocess.run(
-        [_BASH, "-c", script], cwd=tmp_path, env=env, capture_output=True, text=True, timeout=30,
+        [_BASH, "-c", script], cwd=repo, env=env, capture_output=True, text=True, timeout=30,
     )
 
 
@@ -84,18 +92,20 @@ def _stub_body_exiting(code):
     ids=["clean", "advisory", "bright_line", "internal_error", "unexpected_code"],
 )
 def test_gate_run_step_maps_guard_exit_code_to_build_result(
-    tmp_path, stub_exit_code, expected_step_exit_code
+    tmp_path, gate_test_repo_template, stub_exit_code, expected_step_exit_code
 ):
-    result = _run_gate_step_with_stub_guard(tmp_path, _stub_body_exiting(stub_exit_code))
+    result = _run_gate_step_with_stub_guard(
+        tmp_path, gate_test_repo_template, _stub_body_exiting(stub_exit_code)
+    )
 
     assert result.returncode == expected_step_exit_code
     assert "stub output" in result.stdout
 
 
 @pytest.mark.skipif(_BASH is None, reason="no bash with mapfile support found on PATH")
-def test_gate_run_step_emits_a_warning_annotation_per_advisory_line(tmp_path):
+def test_gate_run_step_emits_a_warning_annotation_per_advisory_line(tmp_path, gate_test_repo_template):
     result = _run_gate_step_with_stub_guard(
-        tmp_path, 'import sys\nprint("thing.py: msg")\nsys.exit(1)\n'
+        tmp_path, gate_test_repo_template, 'import sys\nprint("thing.py: msg")\nsys.exit(1)\n'
     )
 
     assert result.returncode == 0

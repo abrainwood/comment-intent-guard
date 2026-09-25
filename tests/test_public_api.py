@@ -154,8 +154,6 @@ def test_docstring_finding_span_tracks_where_the_docstring_actually_sits(leading
     findings = guard.find_misplaced_rationale(text)
 
     _, span = next(f for f in findings if f[0].startswith("Docstring spans"))
-    start, end = span
-    assert start <= end
     assert span == (1 + leading_lines, body_line_count + 2 + leading_lines)
 
 
@@ -169,8 +167,6 @@ def test_yaml_comment_run_span_tracks_where_the_run_actually_sits(leading_lines)
     findings = guard.find_yaml_findings(text)
 
     _, span = next(f for f in findings if f[0].startswith("Comment run"))
-    start, end = span
-    assert start <= end
     assert span == (1 + leading_lines, run_len + leading_lines)
 
 
@@ -182,8 +178,6 @@ def test_blocking_violation_span_tracks_where_the_flagged_docstring_actually_sit
     violations = guard.find_blocking_violations(text, "/repo/tests/test_gap.py")
 
     _, span = next(v for v in violations if "MG-1" in v[0])
-    start, end = span
-    assert start <= end
     assert span == (1 + leading_lines, 4 + leading_lines)
 
 
