@@ -326,6 +326,25 @@ def test_added_line_numbers_map_degrades_every_file_in_the_group_on_diff_timeout
         assert str(target) in stderr
 
 
+def test_added_line_numbers_map_merges_added_lines_from_every_successful_diff_chunk(git_repo, monkeypatch):
+    filenames = ["a.py", "b.py"]
+    a_target, b_target = (_write(git_repo, name, "x = 1\n") for name in filenames)
+    subprocess.run(["git", "add", *filenames], cwd=git_repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
+        cwd=git_repo, check=True,
+    )
+    a_target.write_text("x = 1\ny = 2\n")
+    b_target.write_text("x = 1\ny = 2\nz = 3\n")
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+
+    result = guard._added_line_numbers_map(
+        "HEAD", [str(a_target), str(b_target)], repo_root=str(git_repo), files_are_tracked=True
+    )
+
+    assert result == {str(a_target): {2}, str(b_target): {2, 3}}
+
+
 def test_added_line_numbers_map_degrades_every_file_when_status_times_out_before_any_diff(
     git_repo, monkeypatch, capsys
 ):
