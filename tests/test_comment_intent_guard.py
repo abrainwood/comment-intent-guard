@@ -1974,6 +1974,34 @@ def test_added_line_numbers_on_an_untracked_file_returns_none(tmp_path):
     assert added is None
 
 
+def test_added_line_numbers_map_skips_status_for_tracked_files_without_a_repo_root(tmp_path):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    for target in targets:
+        target.write_text("x = 1\ny = 2\n")
+
+    real_run = subprocess.run
+    calls = []
+
+    def _counting_run(args, **kwargs):
+        calls.append(args)
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_counting_run):
+        added = guard._added_line_numbers_map(
+            "HEAD", [str(target) for target in targets], files_are_tracked=True
+        )
+
+    assert added == {str(target): {2} for target in targets}
+    status_calls = [call for call in calls if "status" in call]
+    assert len(status_calls) == 0
+
+
 def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_diff_exits_non_zero(tmp_path, capsys):
     _init_git_repo(tmp_path)
     filenames = ["a.py", "b.py"]
@@ -1987,12 +2015,13 @@ def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_diff_exi
 
     assert added == {str(target): None for target in targets}
     stderr = capsys.readouterr().err
+    assert "git diff against nosuchref failed" in stderr
     assert "exit 128" in stderr
     for target in targets:
         assert str(target) in stderr
 
 
-def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_exits_non_zero(tmp_path, capsys):
+def test_added_line_numbers_map_warns_and_degrades_a_single_chunk_group_when_status_exits_non_zero(tmp_path, capsys):
     _init_git_repo(tmp_path)
     filenames = ["a.py", "b.py"]
     targets = [tmp_path / name for name in filenames]
@@ -2013,8 +2042,36 @@ def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_e
 
     assert added == {str(target): None for target in targets}
     stderr = capsys.readouterr().err
+    assert "git status failed" in stderr
     assert "fake status failure" in stderr
     assert "exit 1" in stderr
+
+
+def test_added_line_numbers_map_warns_and_degrades_a_single_chunk_group_when_status_raises_oserror(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_status(args, **kwargs):
+        if "status" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_status):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "git status" in stderr
+    assert "OSError" in stderr
+    for target in targets:
+        assert str(target) in stderr
 
 
 def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_raises_oserror(tmp_path, capsys):
@@ -2098,6 +2155,42 @@ def test_added_line_numbers_map_degrades_the_group_when_git_diff_raises_oserror(
         assert str(target.name) in stderr
 
 
+def test_added_line_numbers_map_degrades_only_the_repo_whose_toplevel_fails(tmp_path, capsys):
+    good_repo = tmp_path / "good_repo"
+    good_repo.mkdir()
+    _init_git_repo(good_repo)
+    good_file = good_repo / "good.py"
+    good_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "good.py"], cwd=good_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=good_repo, check=True)
+    good_file.write_text("x = 1\ny = 2\n")
+
+    bad_repo = tmp_path / "bad_repo"
+    bad_repo.mkdir()
+    _init_git_repo(bad_repo)
+    bad_file = bad_repo / "bad.py"
+    bad_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "bad.py"], cwd=bad_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=bad_repo, check=True)
+    bad_file.write_text("x = 1\ny = 2\n")
+
+    real_run = subprocess.run
+
+    def _fail_rev_parse_for_bad_repo(args, **kwargs):
+        if "rev-parse" in args and str(bad_repo) in args:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="fake rev-parse failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_rev_parse_for_bad_repo):
+        added = guard._added_line_numbers_map("HEAD", [str(good_file), str(bad_file)])
+
+    assert added[str(bad_file)] is None
+    assert added[str(good_file)] == {2}
+    stderr = capsys.readouterr().err
+    assert str(bad_repo) in stderr
+    assert str(good_repo) not in stderr
+
+
 def _init_two_tracked_files_repo(tmp_path):
     _init_git_repo(tmp_path)
     a_target = tmp_path / "a.py"
@@ -2109,6 +2202,78 @@ def _init_two_tracked_files_repo(tmp_path):
     a_target.write_text("x = 1\ny = 2\n")
     b_target.write_text("x = 1\ny = 2\n")
     return a_target, b_target
+
+
+def test_added_line_numbers_map_warns_naming_only_the_failing_chunk_when_a_diff_chunk_fails(
+    tmp_path, monkeypatch, capsys
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake diff failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    stderr = capsys.readouterr().err
+    assert str(a_target) in stderr
+    assert "b.py" not in stderr
+
+
+def _exit_nonzero_status(args, **kwargs):
+    return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake status failure\n")
+
+
+def _timeout_status(args, **kwargs):
+    raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+
+def _oserror_status(args, **kwargs):
+    raise OSError("no such file or directory: git")
+
+
+@pytest.mark.parametrize(
+    "make_first_chunk_failure", [_exit_nonzero_status, _timeout_status, _oserror_status]
+)
+def test_added_line_numbers_map_still_classifies_later_untracked_and_tracked_files_after_a_status_chunk_fails(
+    tmp_path, monkeypatch, capsys, make_first_chunk_failure
+):
+    _init_git_repo(tmp_path)
+    status_failing_file = tmp_path / "a.py"
+    tracked_file_after_failure = tmp_path / "c.py"
+    status_failing_file.write_text("x = 1\n")
+    tracked_file_after_failure.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py", "c.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    status_failing_file.write_text("x = 1\ny = 2\n")
+    untracked_file_after_failure = tmp_path / "b.py"
+    untracked_file_after_failure.write_text("x = 1\n")
+    tracked_file_after_failure.write_text("x = 1\ny = 2\n")
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_status_chunk(args, **kwargs):
+        if "status" in args and "a.py" in args:
+            return make_first_chunk_failure(args, **kwargs)
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_status_chunk):
+        added = guard._added_line_numbers_map(
+            "HEAD",
+            [str(status_failing_file), str(untracked_file_after_failure), str(tracked_file_after_failure)],
+        )
+
+    assert added[str(status_failing_file)] is None
+    assert added[str(untracked_file_after_failure)] is None
+    assert added[str(tracked_file_after_failure)] == {2}
+    stderr = capsys.readouterr().err
+    assert str(status_failing_file) in stderr
 
 
 def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_exits_non_zero(
@@ -2268,6 +2433,37 @@ def test_parse_diff_added_lines_tracks_file_boundaries_across_renames_deletes_an
         "new_file.py": {1, 2, 3},
         "keep.py": {6, 7},
     }
+
+
+def test_added_line_numbers_map_gives_both_spellings_of_one_file_the_same_added_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    target.write_text("x = 1\ny = 2\n")
+
+    plain_spelling = str(target)
+    dotted_spelling = f"{tmp_path}/./a.py"
+
+    added = guard._added_line_numbers_map("HEAD", [plain_spelling, dotted_spelling])
+
+    assert added[plain_spelling] == {2}
+    assert added[dotted_spelling] == {2}
+
+
+def test_added_line_numbers_map_gives_both_spellings_of_one_untracked_file_none(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+
+    plain_spelling = str(target)
+    dotted_spelling = f"{tmp_path}/./a.py"
+
+    added = guard._added_line_numbers_map("HEAD", [plain_spelling, dotted_spelling])
+
+    assert added[plain_spelling] is None
+    assert added[dotted_spelling] is None
 
 
 def test_added_line_numbers_map_treats_an_untouched_tracked_file_as_no_added_lines(tmp_path):
