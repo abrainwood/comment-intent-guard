@@ -196,6 +196,149 @@ def test_doc_comment_with_a_stray_triple_slash_line_before_the_signature_is_bloc
     assert violations == [(_csharp_test_doc_violation("T", 5), (5, 5))]
 
 
+def test_doc_comment_before_an_attribute_with_an_unterminated_comment_closing_on_a_later_line_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* oops real code\n"
+        "some other stray text */\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))]
+
+
+def test_doc_comment_before_a_block_comment_spanning_two_attribute_lines_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* start\n"
+        'end */ [Trait("x", "y")]\n'
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))]
+
+
+def test_doc_comment_before_two_chained_block_comments_where_the_second_is_unterminated_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* a */ /* b\n"
+        "c */\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))]
+
+
+def test_doc_comment_before_two_chained_block_comments_does_not_name_a_method_inside_the_second_comment():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* a */ /* b\n"
+        "public void Fake()\n"
+        "c */\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 5), (5, 5))]
+
+
+def test_doc_comment_before_a_comment_closing_with_trailing_real_code_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* start\n"
+        "see Helper() */ public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_comment_closing_with_a_trailing_attribute_and_code_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* a\n"
+        'end */ [Trait("x", "y")] public void ChecksTheThing()\n'
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
+
+
+def test_doc_comment_before_an_attribute_whose_block_comment_never_closes_still_finds_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* never closed\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
+
+
+def test_doc_comment_before_an_attribute_whose_opener_overlaps_a_false_close_marker_finds_the_real_close():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /*/ start\n"
+        "end */\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))]
+
+
+def test_doc_comment_before_an_attribute_with_a_block_comment_spanning_three_or_more_lines_finds_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* a\n"
+        "b\n"
+        "c\n"
+        "d */\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 6), (6, 6))]
+
+
+def test_skip_comments_resumes_on_the_closing_line_with_the_code_after_the_close():
+    lines = ["[Fact] /* a", "end */ public void ChecksTheThing()"]
+
+    li, rest = guard._csharp_skip_comments(lines, 0, " /* a")
+
+    assert (li, rest) == (1, "public void ChecksTheThing()")
+
+
 def test_doc_comment_before_a_fully_qualified_attribute_is_blocked():
     text = (
         "/// <summary>Checks the thing.</summary>\n"
