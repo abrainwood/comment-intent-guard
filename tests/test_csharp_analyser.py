@@ -182,18 +182,18 @@ def test_doc_comment_before_a_blank_line_then_attribute_is_blocked():
 
 def test_doc_comment_with_a_stray_triple_slash_line_before_the_signature_is_blocked():
     text = (
-        "/// <summary>Checks the thing.</summary>\n"
+        "/// doc\n"
         "[Fact]\n"
-        "/// TODO: clean up\n"
-        "public void ChecksTheThing()\n"
+        '[Trait("a", "b")]\n'
+        "/// stray\n"
+        "public void T()\n"
         "{\n"
         "}\n"
     )
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
-    expected = (_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))
-    assert violations == [expected]
+    assert violations == [(_csharp_test_doc_violation("T", 5), (5, 5))]
 
 
 def test_doc_comment_before_a_fully_qualified_attribute_is_blocked():
@@ -1021,3 +1021,125 @@ def test_doc_comment_before_an_attribute_at_end_of_file_is_not_blocked():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == []
+
+
+def test_doc_comment_before_a_second_attribute_with_a_trailing_line_comment_is_blocked():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        '[Trait("a", "b")] // note\n'
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 4), (4, 4))]
+
+
+def test_doc_comment_before_a_second_attribute_with_a_trailing_block_comment_is_blocked():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        '[Trait("a", "b")] /* note */\n'
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 4), (4, 4))]
+
+
+def test_doc_comment_before_an_attribute_with_a_trailing_line_comment_is_blocked():
+    text = (
+        "/// doc\n"
+        "[Fact] // note\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 3), (3, 3))]
+
+
+def test_doc_comment_before_an_attribute_with_a_trailing_block_comment_is_blocked():
+    text = (
+        "/// doc\n"
+        "[Fact] /* note */\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 3), (3, 3))]
+
+
+def test_javadoc_block_between_the_attribute_and_the_signature_is_blocked():
+    text = (
+        "[Fact]\n"
+        "/** doc */\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 3), (3, 3))]
+
+
+def test_same_named_documented_test_methods_in_different_classes_are_each_blocked():
+    text = (
+        "class A\n"
+        "{\n"
+        "    [Fact]\n"
+        "    /// doc\n"
+        "    public void T()\n"
+        "    {\n"
+        "    }\n"
+        "}\n"
+        "\n"
+        "class B\n"
+        "{\n"
+        "    [Fact]\n"
+        "    /// doc\n"
+        "    public void T()\n"
+        "    {\n"
+        "    }\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [
+        (_csharp_test_doc_violation("T", 5), (5, 5)),
+        (_csharp_test_doc_violation("T", 14), (14, 14)),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (" // note", ""),
+        (" /* note */", ""),
+        (" public void T()", " public void T()"),
+        (" public void T() // note", " public void T()"),
+        (" public void T() /* note */", " public void T()"),
+        (" /* note */   ", ""),
+        (" /* a */ /* b */", " /* a */"),
+        ("  code   /* note */", "  code"),
+        ("code */", "code */"),
+        ("code", "code"),
+        ("  code   // note", "  code"),
+        ("code // a // b", "code"),
+    ],
+)
+def test_csharp_strip_trailing_comment(text, expected):
+    assert guard._csharp_strip_trailing_comment(text) == expected
