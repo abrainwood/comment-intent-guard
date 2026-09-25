@@ -4,6 +4,7 @@ set -eu
 MUTMUT_VERSION="3.8.0"
 PYTEST_VERSION="9.1.1"
 PYYAML_VERSION="6.0.3"
+PYTEST_XDIST_VERSION="3.6.1"
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 VENV_DIR="$ROOT_DIR/.venv-mutate"
@@ -26,7 +27,8 @@ ensure_venv() {
     "$PYTHON" -m venv "$VENV_DIR"
   fi
   "$VENV_DIR/bin/python" -m pip install --quiet --disable-pip-version-check \
-    "mutmut==$MUTMUT_VERSION" "pytest==$PYTEST_VERSION" "pyyaml==$PYYAML_VERSION"
+    "mutmut==$MUTMUT_VERSION" "pytest==$PYTEST_VERSION" "pyyaml==$PYYAML_VERSION" \
+    "pytest-xdist==$PYTEST_XDIST_VERSION"
 }
 
 apply_patches() {

@@ -24,6 +24,10 @@ pytest_add_cli_args_test_selection = ["tests/"]
 pytest_add_cli_args = [
     "--ignore=tests/test_init.py",
     "--deselect=tests/test_public_api.py::test_declared_surface_matches_the_modules_actual_public_surface",
+    # Overrides pytest.ini's `-n auto`: mutmut runs pytest once per mutant on
+    # a small, coverage-selected subset, and xdist's worker bring-up cost
+    # would dwarf that per-run test time.
+    "-n0",
 ]
 also_copy = [
     "bin",
