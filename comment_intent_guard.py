@@ -1559,17 +1559,8 @@ def _resolved_path(path):
     return os.path.join(resolved_dir, os.path.basename(path))
 
 
-def _run_chunked_git_command(relpaths, relpath_to_paths, build_command, label, parse_chunk, container, exit_label=None):
-    """Run build_command over relpaths in _PATHSPEC_CHUNK_SIZE chunks.
-
-    On success, parse_chunk(stdout, chunk) is merged into container via
-    container.update(...) - container.update must accept whatever
-    parse_chunk returns (an iterable of relpaths for a set, a relpath ->
-    value mapping for a dict). A chunk that times out, raises OSError, or
-    exits non-zero is warned about and its relpaths added to the returned
-    failed set; later chunks still run.
-    """
-    exit_label = label if exit_label is None else exit_label
+def _run_chunked_git_command(relpaths, relpath_to_paths, build_command, label):
+    outputs = []
     failed_relpaths = set()
     for chunk in _chunked(relpaths, _PATHSPEC_CHUNK_SIZE):
         joined = _joined_for_message(path for relpath in chunk for path in relpath_to_paths[relpath])
@@ -1594,13 +1585,13 @@ def _run_chunked_git_command(relpaths, relpath_to_paths, build_command, label, p
             continue
         if result.returncode != 0:
             _warn(
-                f"git {exit_label} failed for {joined} (exit {result.returncode}): "
+                f"git {label} failed for {joined} (exit {result.returncode}): "
                 f"{result.stderr.strip()} - not filtering findings for these files"
             )
             failed_relpaths.update(chunk)
             continue
-        container.update(parse_chunk(result.stdout, chunk))
-    return failed_relpaths
+        outputs.append((chunk, result.stdout))
+    return outputs, failed_relpaths
 
 
 def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files_are_tracked=False):
@@ -1612,13 +1603,15 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files
     untracked = set()
     status_failed_relpaths = set()
     if not files_are_tracked:
-        status_failed_relpaths = _run_chunked_git_command(
+        status_outputs, status_failed_relpaths = _run_chunked_git_command(
             relpaths, relpath_to_paths,
-            lambda chunk: [
+            build_command=lambda chunk: [
                 "git", "--literal-pathspecs", "-C", toplevel, "status", "--porcelain", "-z", "--", *chunk
             ],
-            "status", _parse_porcelain_untracked, untracked,
+            label="status",
         )
+        for chunk, stdout in status_outputs:
+            untracked.update(_parse_porcelain_untracked(stdout, chunk))
 
     result = {
         path: None for relpath in untracked | status_failed_relpaths for path in relpath_to_paths[relpath]
@@ -1630,15 +1623,16 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files
         return result
 
     added_by_relpath = {}
-    failed_relpaths = _run_chunked_git_command(
+    diff_outputs, failed_relpaths = _run_chunked_git_command(
         tracked_relpaths, relpath_to_paths,
-        lambda chunk: [
+        build_command=lambda chunk: [
             "git", "--literal-pathspecs", "-C", toplevel, "-c", "core.quotePath=false", "diff", "-U0",
             "--no-color", base_ref, "--", *chunk
         ],
-        "diff", lambda stdout, chunk: _parse_diff_added_lines(stdout, set(chunk)), added_by_relpath,
-        exit_label=f"diff against {base_ref}",
+        label=f"diff against {base_ref}",
     )
+    for chunk, stdout in diff_outputs:
+        added_by_relpath.update(_parse_diff_added_lines(stdout, set(chunk)))
 
     for relpath in tracked_relpaths:
         value = None if relpath in failed_relpaths else added_by_relpath.get(relpath, set())
