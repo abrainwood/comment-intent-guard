@@ -6,7 +6,7 @@ This is a Claude Code plugin, not a packaged Python distribution - there's
 no `pip install -e .`. Install the pinned dependencies CI uses directly:
 
 ```sh
-pip install ruff==0.16.5 pytest==8.3.4 pyyaml==6.0.2
+pip install ruff==0.16.5 pytest==8.3.4 pyyaml==6.0.2 pytest-xdist==3.6.1
 ```
 
 Python 3.12 or newer (see the README's Requirements section for why).
@@ -15,8 +15,8 @@ Python 3.12 or newer (see the README's Requirements section for why).
 
 ```sh
 ruff check .                 # lint
-pytest -q                    # test suite
-shellcheck init.sh templates/pre-commit.sh bin/comment-intent-guard
+pytest -q -n auto            # full test suite, in parallel
+shellcheck init.sh templates/pre-commit.sh bin/comment-intent-guard scripts/mutate.sh
 ```
 
 `ruff` and `shellcheck` are what `.github/workflows/ci.yml`'s `lint` job
