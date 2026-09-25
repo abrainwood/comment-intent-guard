@@ -486,10 +486,10 @@ def test_doc_comment_before_a_same_line_attribute_does_not_misattribute_the_body
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
-    assert not any("Equal" in message for message, _ in violations)
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 2), (2, 2))]
 
 
-def test_attribute_with_a_block_comment_before_a_doc_comment_is_recognised_as_a_test_attribute():
+def test_attribute_with_a_block_comment_before_a_doc_comment_names_the_method():
     text = (
         '[Fact] /* a */ [Trait("x", "y")]\n'
         "/// <summary>Checks the thing.</summary>\n"
@@ -507,20 +507,6 @@ def test_doc_comment_before_a_block_comment_between_two_attributes_names_the_met
     text = (
         "/// <summary>Checks the thing.</summary>\n"
         '[Fact] /* a */ [Trait("x", "y")]\n'
-        "public void ChecksTheThing()\n"
-        "{\n"
-        "}\n"
-    )
-
-    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
-
-    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
-
-
-def test_doc_comment_before_a_single_attribute_with_a_trailing_line_comment_names_the_method():
-    text = (
-        "/// <summary>Checks the thing.</summary>\n"
-        "[Fact] // trailing\n"
         "public void ChecksTheThing()\n"
         "{\n"
         "}\n"
@@ -571,7 +557,76 @@ def test_doc_comment_before_three_attributes_separated_by_two_block_comments_nam
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
-    assert any("ChecksTheThing" in message for message, _ in violations)
+
+
+def test_doc_comment_before_a_non_test_attribute_then_block_comment_then_fact_names_the_method():
+    text = (
+        "/// <summary>x</summary>\n"
+        '[Trait("x", "y")] /* a */ [Fact]\n'
+        "public void M()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("M", 3), (3, 3))]
+
+
+def test_non_test_attribute_then_block_comment_then_fact_before_a_doc_comment_names_the_method():
+    text = (
+        '[Trait("x", "y")] /* a */ [Fact]\n'
+        "/// <summary>x</summary>\n"
+        "public void M()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("M", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_non_test_attribute_then_block_comment_then_another_non_test_attribute_is_not_blocked():
+    text = (
+        "/// <summary>x</summary>\n"
+        '[Trait("x", "y")] /* a */ [Obsolete]\n'
+        "public void M()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_doc_comment_before_a_line_comment_containing_a_bracket_group_is_not_blocked():
+    text = (
+        "/// <summary>x</summary>\n"
+        "[Obsolete] // [Fact]\n"
+        "public void M()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_line_comment_containing_a_bracket_group_before_a_doc_comment_is_not_blocked():
+    text = (
+        "[Obsolete] // [Fact]\n"
+        "/// <summary>x</summary>\n"
+        "public void M()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
 
 
 @pytest.mark.parametrize(
@@ -1468,4 +1523,4 @@ def test_same_named_documented_test_methods_in_different_classes_are_each_blocke
     ],
 )
 def test_attribute_remainder_that_is_only_comments_is_ignored(text, expected):
-    assert guard._csharp_is_only_comments(text) == expected
+    assert (guard._csharp_skip_comments([text], 0, text)[1] == "") == expected

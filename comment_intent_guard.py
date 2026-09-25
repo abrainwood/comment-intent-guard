@@ -687,10 +687,6 @@ def _csharp_find_block_comment_close(lines, li):
     return None
 
 
-def _csharp_is_only_comments(text):
-    return _csharp_skip_comments([text], 0, text)[1] == ""
-
-
 def _csharp_skip_comments(lines, li, text):
     rest = text.strip()
     while True:
@@ -709,13 +705,9 @@ def _csharp_skip_comments(lines, li, text):
         rest = after.strip()
 
 
-def _csharp_line_attribute_group(lines, li, line):
-    n = len(line)
-    start = 0
-    while start < n and line[start] in " \t":
-        start += 1
+def _csharp_line_attribute_group(lines, li):
     groups = []
-    tail = line[start:]
+    tail = lines[li].lstrip(" \t")
     while True:
         end = _csharp_skip_attribute_bracket_group(tail, 0)
         if end is None:
@@ -728,7 +720,7 @@ def _csharp_line_attribute_group(lines, li, line):
 
 
 def _csharp_consume_attribute_line(lines, li):
-    group = _csharp_line_attribute_group(lines, li, lines[li])
+    group = _csharp_line_attribute_group(lines, li)
     if group is None:
         return None
     attrs_text, li, rest = group
@@ -774,7 +766,7 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
         li -= 1
     if li < 0:
         return False
-    group = _csharp_line_attribute_group(lines, li, lines[li])
+    group = _csharp_line_attribute_group(lines, li)
     if group is None:
         return False
     attrs_text, _, remainder = group
