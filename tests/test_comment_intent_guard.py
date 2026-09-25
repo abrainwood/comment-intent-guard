@@ -1863,6 +1863,67 @@ def test_added_line_numbers_warns_and_returns_none_when_git_is_not_on_path(capsy
     assert "comment_intent_guard" in capsys.readouterr().err
 
 
+def test_added_line_numbers_map_handles_a_tracked_file_with_a_space_in_its_name(tmp_path):
+    _init_git_repo(tmp_path)
+    spaced_file = tmp_path / "my file.py"
+    spaced_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "my file.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    spaced_file.write_text("x = 1\ny = 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(spaced_file)])
+
+    assert added[str(spaced_file)] == {2}
+
+
+def test_added_line_numbers_map_handles_a_tracked_file_with_a_non_ascii_name(tmp_path):
+    _init_git_repo(tmp_path)
+    cafe_file = tmp_path / "café.py"
+    cafe_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "café.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    cafe_file.write_text("x = 1\ny = 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(cafe_file)])
+
+    assert added[str(cafe_file)] == {2}
+
+
+def test_added_line_numbers_map_keeps_later_hunks_after_a_body_line_that_looks_like_a_diff_header(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "thing.py"
+    target.write_text("a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\ni = 9\nj = 10\n")
+    subprocess.run(["git", "add", "thing.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    target.write_text(
+        "a = 1\n"
+        "++ this line starts with a plus-plus-space\n"
+        "b = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\ni = 9\n"
+        "another appended line\n"
+        "j = 10\n"
+    )
+
+    added = guard._added_line_numbers_map("HEAD", [str(target)])
+
+    assert added[str(target)] == {2, 11}
+
+
+def test_added_line_numbers_map_untracked_file_with_a_space_in_its_name_returns_none(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "placeholder.txt").write_text("x\n")
+    subprocess.run(["git", "add", "placeholder.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    untracked_file = tmp_path / "new file.yaml"
+    untracked_file.write_text("key: value\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(untracked_file)])
+
+    assert added[str(untracked_file)] is None
+
+
 def test_added_line_numbers_on_an_untracked_file_returns_none(tmp_path):
     _init_git_repo(tmp_path)
     (tmp_path / "placeholder.txt").write_text("x\n")
@@ -1874,6 +1935,65 @@ def test_added_line_numbers_on_an_untracked_file_returns_none(tmp_path):
     added = guard._added_line_numbers("HEAD", str(untracked_file))
 
     assert added is None
+
+
+def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_diff_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    added = guard._added_line_numbers_map("nosuchref", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "exit 128" in stderr
+    for target in targets:
+        assert str(target) in stderr
+
+
+def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_status(args, **kwargs):
+        if "status" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake status failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_status):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "fake status failure" in stderr
+    assert "exit 1" in stderr
+
+
+def test_joined_for_message_lists_every_path_at_or_under_the_limit():
+    assert guard._joined_for_message(["a", "b", "c"]) == "a, b, c"
+
+
+def test_joined_for_message_caps_at_the_limit_and_counts_the_remainder():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e", "f", "g"]) == "a, b, c, d, e and 2 more"
+
+
+def test_joined_for_message_at_exactly_the_limit_has_no_remainder_suffix():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e"]) == "a, b, c, d, e"
+
+
+def test_joined_for_message_one_over_the_limit_reports_one_more():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e", "f"]) == "a, b, c, d, e and 1 more"
 
 
 def test_finding_ending_before_the_added_lines_is_filtered_out():
@@ -1895,14 +2015,14 @@ def test_single_line_hunk_header_without_a_count_adds_exactly_one_line(tmp_path)
 
 
 def test_parse_porcelain_untracked_finds_an_untracked_entry_after_a_tracked_one():
-    porcelain_output = "M  a_tracked.py\n?? z_untracked.py\n"
+    porcelain_output = "M  a_tracked.py\0?? z_untracked.py\0"
 
     untracked = guard._parse_porcelain_untracked(porcelain_output, ["a_tracked.py", "z_untracked.py"])
 
     assert untracked == {"z_untracked.py"}
 
 
-def test_parse_grouped_diff_added_lines_tracks_file_boundaries_across_renames_and_deletes():
+def test_parse_diff_added_lines_tracks_file_boundaries_across_renames_deletes_and_unrequested_files():
     diff_output = (
         "diff --git a/gone.py b/gone.py\n"
         "deleted file mode 100644\n"
@@ -1912,6 +2032,14 @@ def test_parse_grouped_diff_added_lines_tracks_file_boundaries_across_renames_an
         "@@ -1,2 +0,0 @@\n"
         "-line1\n"
         "-line2\n"
+        "diff --git a/skip_me.py b/skip_me.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/skip_me.py\n"
+        "+++ b/skip_me.py\n"
+        "@@ -1,0 +1,3 @@\n"
+        "+skip_one\n"
+        "+skip_two\n"
+        "+skip_three\n"
         "diff --git a/old_name.py b/renamed.py\n"
         "similarity index 80%\n"
         "rename from old_name.py\n"
@@ -1940,8 +2068,10 @@ def test_parse_grouped_diff_added_lines_tracks_file_boundaries_across_renames_an
         "+y\n"
     )
 
-    added = guard._parse_grouped_diff_added_lines(diff_output, ["renamed.py", "new_file.py", "keep.py"])
+    added = guard._parse_diff_added_lines(diff_output, {"renamed.py", "new_file.py", "keep.py"})
 
+    assert "skip_me.py" not in added
+    assert "gone.py" not in added
     assert added == {
         "renamed.py": {4, 5},
         "new_file.py": {1, 2, 3},
