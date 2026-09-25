@@ -1,0 +1,11 @@
+# One mutmut mutant key per line (as printed by `mutmut results`, e.g.
+# comment_intent_guard.py::find_yaml_findings__mutmut_3), for mutants a
+# human has confirmed are behaviorally equivalent to the original code -
+# no test could ever kill them because they don't change any observable
+# outcome. scripts/mutate.sh drops these from the survivor report so a
+# review run isn't re-litigating the same confirmed-equivalent noise
+# every time.
+#
+# Empty for now: nothing has been confirmed equivalent yet. Add a line
+# here only after inspecting the diff with `mutmut show <key>` and
+# confirming by hand that no test could distinguish it from the original.

@@ -9,6 +9,7 @@ PYTEST_XDIST_VERSION="3.6.1"
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 VENV_DIR="$ROOT_DIR/.venv-mutate"
 PATCH_DIR="$ROOT_DIR/scripts/mutmut-patches"
+NOISE_FILE="$ROOT_DIR/scripts/mutmut-known-equivalent.txt"
 PYTHON="${PYTHON:-python3}"
 
 usage() {
@@ -39,6 +40,34 @@ apply_patches() {
     fi
     patch --forward --silent -p1 -d "$site_packages" < "$patch_file"
   done
+}
+
+report_results() {
+  raw_file="$(mktemp)"
+  mutmut results > "$raw_file"
+
+  noise_patterns_file="$(mktemp)"
+  if [ -f "$NOISE_FILE" ]; then
+    grep -v '^[[:space:]]*#' "$NOISE_FILE" | grep -v '^[[:space:]]*$' > "$noise_patterns_file" || true
+  fi
+
+  if [ -s "$noise_patterns_file" ]; then
+    filtered_file="$(mktemp)"
+    grep -v -F -f "$noise_patterns_file" "$raw_file" > "$filtered_file" || true
+    suppressed=$(($(wc -l < "$raw_file") - $(wc -l < "$filtered_file")))
+    cat "$filtered_file"
+    rm -f "$filtered_file"
+  else
+    suppressed=0
+    cat "$raw_file"
+  fi
+
+  if [ "$suppressed" -gt 0 ]; then
+    echo
+    echo "suppressed $suppressed known-equivalent mutant(s), see scripts/mutmut-known-equivalent.txt"
+  fi
+
+  rm -f "$raw_file" "$noise_patterns_file"
 }
 
 with_subprocess_coverage=0
@@ -72,5 +101,5 @@ started_at="$(date +%s)"
 mutmut run "$@"
 finished_at="$(date +%s)"
 
-mutmut results
+report_results
 echo "mutmut run wall-clock: $((finished_at - started_at))s"
