@@ -7,6 +7,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import comment_intent_guard as guard  # noqa: E402
+from comment_intent_guard import _parse_diff_added_lines  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stamps as stamps_module  # noqa: E402
@@ -56,78 +57,6 @@ def _git_paths(repo_root, args):
             )
         return []
     return [entry for entry in result.stdout.split("\0") if entry]
-
-
-_C_QUOTE_SIMPLE_ESCAPES = {
-    '"': b'"', "\\": b"\\", "n": b"\n", "t": b"\t",
-    "a": b"\a", "b": b"\b", "f": b"\f", "r": b"\r", "v": b"\v",
-}
-
-
-def _c_unquote_body(body):
-    out = bytearray()
-    i, n = 0, len(body)
-    while i < n:
-        char = body[i]
-        if char != "\\" or i + 1 >= n:
-            out += char.encode("utf-8")
-            i += 1
-            continue
-        escaped = body[i + 1]
-        simple = _C_QUOTE_SIMPLE_ESCAPES.get(escaped)
-        if simple is not None:
-            out += simple
-            i += 2
-            continue
-        if "0" <= escaped <= "7":
-            j = i + 1
-            end = min(j + 3, n)
-            while j < end and "0" <= body[j] <= "7":
-                j += 1
-            out.append(int(body[i + 1:j], 8) & 0xFF)
-            i = j
-            continue
-        out += body[i:i + 2].encode("utf-8")
-        i += 2
-    return out
-
-
-def _unquote_git_header_path(raw):
-    # A path with a space gets a trailing tab (git's own disambiguation);
-    # a path with control characters gets wrapped in C-quotes instead.
-    raw = raw.removesuffix("\t")
-    if raw.startswith('"') and raw.endswith('"'):
-        try:
-            return _c_unquote_body(raw[1:-1]).decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-    return raw
-
-
-def _parse_diff_added_lines(diff_output, known_relpaths):
-    added_by_relpath = {}
-    current_relpath = None
-    in_hunks = False
-    for line in diff_output.splitlines():
-        if line.startswith("diff --git "):
-            in_hunks = False
-            current_relpath = None
-            continue
-        if not in_hunks and line.startswith("+++ "):
-            path_part = _unquote_git_header_path(line[len("+++ "):])
-            current_relpath = None if path_part == "/dev/null" else path_part.removeprefix("b/")
-            if current_relpath in known_relpaths:
-                added_by_relpath.setdefault(current_relpath, set())
-            else:
-                current_relpath = None
-            in_hunks = True
-            continue
-        match = guard._HUNK_HEADER_RE.match(line)
-        if match is not None and current_relpath is not None:
-            start = int(match.group(1))
-            count = int(match.group(2)) if match.group(2) is not None else 1
-            added_by_relpath[current_relpath].update(range(start, start + count))
-    return added_by_relpath
 
 
 def _tracked_diff_added_lines(repo_root, known_relpaths):

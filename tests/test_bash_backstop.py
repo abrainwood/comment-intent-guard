@@ -293,55 +293,6 @@ def test_parse_diff_added_lines_hunk_header_with_an_explicit_count_adds_every_li
     assert result == {"a.py": {5, 6, 7}}
 
 
-def test_unquote_git_header_path_handles_mixed_raw_and_octal_escapes_from_quote_path_false(tmp_path):
-    module = _import_bash_backstop()
-
-    raw = '"b/a\\"☃.py"'
-
-    assert module._unquote_git_header_path(raw) == 'b/a"☃.py'
-
-
-def test_unquote_git_header_path_handles_a_fully_octal_quoted_path(tmp_path):
-    module = _import_bash_backstop()
-
-    raw = '"b/a\\"\\342\\230\\203.py"'
-
-    assert module._unquote_git_header_path(raw) == 'b/a"☃.py'
-
-
-def test_unquote_git_header_path_strips_only_a_trailing_tab_not_a_leading_one():
-    module = _import_bash_backstop()
-
-    raw = "\tb/a\tb.py\t"
-
-    assert module._unquote_git_header_path(raw) == "\tb/a\tb.py"
-
-
-def test_unquote_git_header_path_falls_back_to_the_raw_quoted_string_when_not_valid_utf8():
-    module = _import_bash_backstop()
-    raw = '"b/a\\377.py"'
-
-    assert module._unquote_git_header_path(raw) == raw
-
-
-def test_c_unquote_body_treats_a_trailing_lone_backslash_as_a_literal_character():
-    module = _import_bash_backstop()
-
-    assert module._c_unquote_body("a\\") == b"a\\"
-
-
-def test_c_unquote_body_keeps_an_unrecognized_escape_as_backslash_and_char():
-    module = _import_bash_backstop()
-
-    assert module._c_unquote_body("a\\zb") == b"a\\zb"
-
-
-def test_c_unquote_body_stops_an_octal_escape_at_three_digits():
-    module = _import_bash_backstop()
-
-    assert module._c_unquote_body("\\1234") == bytes([0o123]) + b"4"
-
-
 def test_is_no_head_yet_is_false_for_exit_128_with_an_unrelated_git_error():
     module = _import_bash_backstop()
     result = subprocess.CompletedProcess(

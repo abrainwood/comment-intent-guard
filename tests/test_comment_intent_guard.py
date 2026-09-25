@@ -2,6 +2,7 @@ import ast
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tokenize
@@ -1863,6 +1864,329 @@ def test_added_line_numbers_warns_and_returns_none_when_git_is_not_on_path(capsy
     assert "comment_intent_guard" in capsys.readouterr().err
 
 
+def test_added_line_numbers_map_handles_a_tracked_file_with_a_space_in_its_name(tmp_path):
+    _init_git_repo(tmp_path)
+    spaced_file = tmp_path / "my file.py"
+    spaced_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "my file.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    spaced_file.write_text("x = 1\ny = 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(spaced_file)])
+
+    assert added[str(spaced_file)] == {2}
+
+
+def test_added_line_numbers_map_handles_a_tracked_file_reached_through_a_symlinked_directory(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    target.write_text("x = 1\ny = 2\n")
+
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    path_via_link = str(link / "a.py")
+
+    added = guard._added_line_numbers_map("HEAD", [path_via_link])
+
+    assert added[path_via_link] == {2}
+
+
+def test_added_line_numbers_map_does_not_let_a_symlink_pointing_outside_the_repo_break_its_group(tmp_path):
+    _init_git_repo(tmp_path)
+    a_target = tmp_path / "a.yaml"
+    a_target.write_text("x: 1\n")
+    outside_dir = tmp_path.parent / "outside"
+    outside_dir.mkdir(exist_ok=True)
+    outside_file = outside_dir / "x.yaml"
+    outside_file.write_text("y: 1\n")
+    ext_link = tmp_path / "ext.yaml"
+    ext_link.symlink_to(os.path.relpath(outside_file, tmp_path))
+    subprocess.run(["git", "add", "a.yaml", "ext.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    a_target.write_text("x: 1\ny: 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(a_target), str(ext_link)], repo_root=str(tmp_path))
+
+    assert added[str(a_target)] == {2}
+
+
+def test_added_line_numbers_map_handles_a_tracked_file_with_a_non_ascii_name(tmp_path):
+    _init_git_repo(tmp_path)
+    cafe_file = tmp_path / "café.py"
+    cafe_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "café.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    cafe_file.write_text("x = 1\ny = 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(cafe_file)])
+
+    assert added[str(cafe_file)] == {2}
+
+
+def test_added_line_numbers_map_keeps_later_hunks_after_a_body_line_that_looks_like_a_diff_header(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "thing.py"
+    target.write_text("a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\ni = 9\nj = 10\n")
+    subprocess.run(["git", "add", "thing.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    target.write_text(
+        "a = 1\n"
+        "++ this line starts with a plus-plus-space\n"
+        "b = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\ni = 9\n"
+        "another appended line\n"
+        "j = 10\n"
+    )
+
+    added = guard._added_line_numbers_map("HEAD", [str(target)])
+
+    assert added[str(target)] == {2, 11}
+
+
+def test_added_line_numbers_map_untracked_file_with_a_space_in_its_name_returns_none(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "placeholder.txt").write_text("x\n")
+    subprocess.run(["git", "add", "placeholder.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    untracked_file = tmp_path / "new file.yaml"
+    untracked_file.write_text("key: value\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(untracked_file)])
+
+    assert added[str(untracked_file)] is None
+
+
+def test_added_line_numbers_on_an_untracked_file_returns_none(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "placeholder.txt").write_text("x\n")
+    subprocess.run(["git", "add", "placeholder.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    untracked_file = tmp_path / "new_config.yaml"
+    untracked_file.write_text("key: value\n")
+
+    added = guard._added_line_numbers("HEAD", str(untracked_file))
+
+    assert added is None
+
+
+def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_diff_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    added = guard._added_line_numbers_map("nosuchref", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "exit 128" in stderr
+    for target in targets:
+        assert str(target) in stderr
+
+
+def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_status(args, **kwargs):
+        if "status" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake status failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_status):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "fake status failure" in stderr
+    assert "exit 1" in stderr
+
+
+def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_raises_oserror(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_rev_parse(args, **kwargs):
+        if "rev-parse" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_rev_parse):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "rev-parse" in stderr
+    assert "OSError" in stderr
+    assert str(tmp_path) in stderr
+
+
+def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_rev_parse(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="fake rev-parse failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_rev_parse):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "fake rev-parse failure" in stderr
+    assert "exit 128" in stderr
+    assert str(tmp_path) in stderr
+
+
+def test_added_line_numbers_map_degrades_the_group_when_git_diff_raises_oserror(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    for target in targets:
+        target.write_text("x = 1\ny = 2\n")
+
+    real_run = subprocess.run
+
+    def _fail_diff(args, **kwargs):
+        if "diff" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_diff):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "git diff" in stderr
+    assert "OSError" in stderr
+    for target in targets:
+        assert str(target.name) in stderr
+
+
+def _init_two_tracked_files_repo(tmp_path):
+    _init_git_repo(tmp_path)
+    a_target = tmp_path / "a.py"
+    b_target = tmp_path / "b.py"
+    a_target.write_text("x = 1\n")
+    b_target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py", "b.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    a_target.write_text("x = 1\ny = 2\n")
+    b_target.write_text("x = 1\ny = 2\n")
+    return a_target, b_target
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_exits_non_zero(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake diff failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_raises_oserror(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_times_out(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
+
+
+def test_joined_for_message_lists_every_path_at_or_under_the_limit():
+    assert guard._joined_for_message(["a", "b", "c"]) == "a, b, c"
+
+
+def test_joined_for_message_caps_at_the_limit_and_counts_the_remainder():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e", "f", "g"]) == "a, b, c, d, e and 2 more"
+
+
+def test_joined_for_message_at_exactly_the_limit_has_no_remainder_suffix():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e"]) == "a, b, c, d, e"
+
+
+def test_joined_for_message_one_over_the_limit_reports_one_more():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e", "f"]) == "a, b, c, d, e and 1 more"
+
+
 def test_finding_ending_before_the_added_lines_is_filtered_out():
     assert guard._touches_added_lines((2, 3), {1}) is False
 
@@ -1879,6 +2203,88 @@ def test_single_line_hunk_header_without_a_count_adds_exactly_one_line(tmp_path)
     added = guard._added_line_numbers("HEAD", str(yaml_file))
 
     assert added == {2}
+
+
+def test_parse_porcelain_untracked_finds_an_untracked_entry_after_a_tracked_one():
+    porcelain_output = "M  a_tracked.py\0?? z_untracked.py\0"
+
+    untracked = guard._parse_porcelain_untracked(porcelain_output, ["a_tracked.py", "z_untracked.py"])
+
+    assert untracked == {"z_untracked.py"}
+
+
+def test_parse_diff_added_lines_tracks_file_boundaries_across_renames_deletes_and_unrequested_files():
+    diff_output = (
+        "diff --git a/gone.py b/gone.py\n"
+        "deleted file mode 100644\n"
+        "index 1234567..0000000\n"
+        "--- a/gone.py\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n"
+        "-line1\n"
+        "-line2\n"
+        "diff --git a/skip_me.py b/skip_me.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/skip_me.py\n"
+        "+++ b/skip_me.py\n"
+        "@@ -1,0 +1,3 @@\n"
+        "+skip_one\n"
+        "+skip_two\n"
+        "+skip_three\n"
+        "diff --git a/old_name.py b/renamed.py\n"
+        "similarity index 80%\n"
+        "rename from old_name.py\n"
+        "rename to renamed.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/old_name.py\n"
+        "+++ b/renamed.py\n"
+        "@@ -3,0 +4,2 @@ def foo():\n"
+        "+added_one\n"
+        "+added_two\n"
+        "diff --git a/new_file.py b/new_file.py\n"
+        "new file mode 100644\n"
+        "index 0000000..abcdef1\n"
+        "--- /dev/null\n"
+        "+++ b/new_file.py\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+a\n"
+        "+b\n"
+        "+c\n"
+        "diff --git a/keep.py b/keep.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/keep.py\n"
+        "+++ b/keep.py\n"
+        "@@ -5,0 +6,2 @@ def bar():\n"
+        "+x\n"
+        "+y\n"
+    )
+
+    added = guard._parse_diff_added_lines(diff_output, {"renamed.py", "new_file.py", "keep.py"})
+
+    assert "skip_me.py" not in added
+    assert "gone.py" not in added
+    assert added == {
+        "renamed.py": {4, 5},
+        "new_file.py": {1, 2, 3},
+        "keep.py": {6, 7},
+    }
+
+
+def test_added_line_numbers_map_treats_an_untouched_tracked_file_as_no_added_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    unchanged_file = tmp_path / "unchanged.yaml"
+    unchanged_file.write_text("old_key: value\n")
+    changed_file = tmp_path / "changed.yaml"
+    changed_file.write_text("old_key: value\n")
+    subprocess.run(["git", "add", "unchanged.yaml", "changed.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    changed_file.write_text("old_key: value\nnew_key: value\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(unchanged_file), str(changed_file)])
+
+    assert added[str(unchanged_file)] == set()
+    assert added[str(changed_file)] == {2}
 
 
 def test_added_line_numbers_against_a_real_repo_returns_only_the_appended_lines(tmp_path):
@@ -2687,3 +3093,39 @@ def test_the_two_allowlist_keys_are_independent_the_general_one_still_clears_doc
     violations = guard.find_blocking_violations(source, str(target))
 
     assert violations == []
+
+
+def test_unquote_git_header_path_handles_mixed_raw_and_octal_escapes_from_quote_path_false():
+    raw = '"b/a\\"☃.py"'
+
+    assert guard._unquote_git_header_path(raw) == 'b/a"☃.py'
+
+
+def test_unquote_git_header_path_handles_a_fully_octal_quoted_path():
+    raw = '"b/a\\"\\342\\230\\203.py"'
+
+    assert guard._unquote_git_header_path(raw) == 'b/a"☃.py'
+
+
+def test_unquote_git_header_path_strips_only_a_trailing_tab_not_a_leading_one():
+    raw = "\tb/a\tb.py\t"
+
+    assert guard._unquote_git_header_path(raw) == "\tb/a\tb.py"
+
+
+def test_unquote_git_header_path_falls_back_to_the_raw_quoted_string_when_not_valid_utf8():
+    raw = '"b/a\\377.py"'
+
+    assert guard._unquote_git_header_path(raw) == raw
+
+
+def test_c_unquote_body_treats_a_trailing_lone_backslash_as_a_literal_character():
+    assert guard._c_unquote_body("a\\") == b"a\\"
+
+
+def test_c_unquote_body_keeps_an_unrecognized_escape_as_backslash_and_char():
+    assert guard._c_unquote_body("a\\zb") == b"a\\zb"
+
+
+def test_c_unquote_body_stops_an_octal_escape_at_three_digits():
+    assert guard._c_unquote_body("\\1234") == bytes([0o123]) + b"4"
