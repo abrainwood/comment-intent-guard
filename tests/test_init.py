@@ -4,8 +4,6 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import pytest
-
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _INIT_SH = _REPO_ROOT / "init.sh"
 
@@ -443,7 +441,6 @@ def _init_repo_and_get_pre_commit(git_repo):
     return git_repo / ".githooks" / "pre-commit"
 
 
-@pytest.mark.slow
 def test_pre_commit_blocks_a_staged_violating_python_file_and_prints_the_finding(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     violating = git_repo / "bad.py"
@@ -464,7 +461,6 @@ def test_pre_commit_blocks_a_staged_violating_python_file_and_prints_the_finding
     assert "commit aborted" in result.stderr
 
 
-@pytest.mark.slow
 def test_pre_commit_exit_4_from_the_guard_warns_and_passes(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     (git_repo / "thing.py").write_text("VALUE = 1\n")
@@ -637,7 +633,6 @@ def test_script_discovery_picks_the_newer_of_two_plugin_candidates(tmp_path, git
     assert "MARKER_OLDER" not in result.stdout
 
 
-@pytest.mark.slow
 def test_pre_commit_allows_a_clean_staged_python_file(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     clean = git_repo / "good.py"
@@ -659,7 +654,6 @@ def test_pre_commit_allows_a_clean_staged_python_file(git_repo):
     assert passed == ["good.py"]
 
 
-@pytest.mark.slow
 def test_pre_commit_prints_advisory_findings_and_still_allows_the_commit(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     advisory_only = git_repo / "config.yaml"
@@ -681,7 +675,6 @@ def test_pre_commit_prints_advisory_findings_and_still_allows_the_commit(git_rep
     assert "config.yaml: advisory finding" in result.stdout
 
 
-@pytest.mark.slow
 def test_pre_commit_passes_with_a_warning_when_no_discovery_arm_resolves(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     violating = git_repo / "bad.py"
@@ -699,7 +692,6 @@ def test_pre_commit_passes_with_a_warning_when_no_discovery_arm_resolves(git_rep
     assert "could not locate" in result.stderr
 
 
-@pytest.mark.slow
 def test_pre_commit_ignores_a_staged_txt_file_but_checks_a_staged_yaml_file(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     (git_repo / "notes.txt").write_text('"""a docstring"""\nnot code, should be ignored\n')
@@ -734,7 +726,6 @@ def test_pre_commit_passes_exactly_the_checked_extensions_to_the_guard(git_repo)
     assert set(_passed_files(result.stdout)) == set(checked)
 
 
-@pytest.mark.slow
 def test_pre_commit_handles_a_non_ascii_staged_filename(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     target = git_repo / "café.py"
@@ -754,7 +745,6 @@ def test_pre_commit_handles_a_non_ascii_staged_filename(git_repo):
     assert "caf\\303\\251.py" not in result.stdout + result.stderr
 
 
-@pytest.mark.slow
 def test_pre_commit_blocks_a_staged_violation_even_when_the_worktree_copy_was_later_fixed(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     staged_then_fixed = git_repo / "sneaky.py"
@@ -774,7 +764,6 @@ def test_pre_commit_blocks_a_staged_violation_even_when_the_worktree_copy_was_la
     assert "sneaky.py" in result.stdout + result.stderr
 
 
-@pytest.mark.slow
 def test_pre_commit_honors_a_staged_id_prefix_allowlist_for_a_filename_id_token(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     config = git_repo / ".comment-intent-guard.json"
@@ -794,7 +783,6 @@ def test_pre_commit_honors_a_staged_id_prefix_allowlist_for_a_filename_id_token(
     assert result.returncode == 0
 
 
-@pytest.mark.slow
 def test_pre_commit_allows_a_staged_clean_file_even_when_the_worktree_copy_was_later_broken(git_repo):
     pre_commit = _init_repo_and_get_pre_commit(git_repo)
     staged_then_broken = git_repo / "sneaky.py"
