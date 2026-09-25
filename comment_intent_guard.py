@@ -1419,41 +1419,91 @@ def _findings_for_file(file_path, text):
 _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
 
 
-def _added_line_numbers(base_ref, file_path):
-    repo_dir = os.path.dirname(file_path) or "."
-    rel_path = os.path.basename(file_path)
+def _parse_porcelain_untracked(porcelain_output, basenames):
+    untracked = set()
+    basenames = set(basenames)
+    for line in porcelain_output.splitlines():
+        if not line.startswith("??"):
+            continue
+        name = os.path.basename(line[3:].strip())
+        if name in basenames:
+            untracked.add(name)
+    return untracked
+
+
+def _parse_grouped_diff_added_lines(diff_output, basenames):
+    basenames = set(basenames)
+    added_by_basename = {}
+    current_basename = None
+    for line in diff_output.splitlines():
+        if line.startswith("diff --git "):
+            current_basename = None
+            continue
+        if line.startswith("+++ "):
+            path_part = line[len("+++ "):]
+            name = None if path_part == "/dev/null" else os.path.basename(path_part.removeprefix("b/"))
+            current_basename = name if name in basenames else None
+            if current_basename is not None:
+                added_by_basename.setdefault(current_basename, set())
+            continue
+        match = _HUNK_HEADER_RE.match(line)
+        if match is not None and current_basename is not None:
+            start = int(match.group(1))
+            count = int(match.group(2)) if match.group(2) is not None else 1
+            added_by_basename[current_basename].update(range(start, start + count))
+    return added_by_basename
+
+
+def _added_line_numbers_for_group(base_ref, repo_dir, group_file_paths):
+    basename_to_path = {os.path.basename(path): path for path in group_file_paths}
+    basenames = list(basename_to_path)
+    joined = ", ".join(group_file_paths)
     try:
         status = subprocess.run(
-            ["git", "-C", repo_dir, "status", "--porcelain", "--", rel_path],
+            ["git", "-C", repo_dir, "status", "--porcelain", "--", *basenames],
             capture_output=True, text=True, timeout=_SCAN_GIT_TIMEOUT_SECONDS,
         )
-        if status.returncode == 0 and status.stdout.startswith("??"):
-            return None  # untracked - every line in the file is new
-        result = subprocess.run(
-            ["git", "-C", repo_dir, "diff", "--unified=0", base_ref, "--", rel_path],
+        untracked = _parse_porcelain_untracked(status.stdout, basenames) if status.returncode == 0 else set()
+        tracked_basenames = [name for name in basenames if name not in untracked]
+        result = {basename_to_path[name]: None for name in untracked}
+        if not tracked_basenames:
+            return result
+        diff = subprocess.run(
+            ["git", "-C", repo_dir, "diff", "--unified=0", base_ref, "--", *tracked_basenames],
             capture_output=True, text=True, timeout=_SCAN_GIT_TIMEOUT_SECONDS,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         _warn(
-            f"could not run git diff for {file_path} ({type(exc).__name__}) - "
-            "not filtering findings for this file"
+            f"could not run git diff for {joined} ({type(exc).__name__}) - "
+            "not filtering findings for the affected files"
         )
-        return None
-    if result.returncode != 0:
+        return {path: None for path in group_file_paths}
+    if diff.returncode != 0:
         _warn(
-            f"git diff against {base_ref} failed for {file_path} "
-            f"(exit {result.returncode}) - not filtering findings for this file"
+            f"git diff against {base_ref} failed for {joined} "
+            f"(exit {diff.returncode}) - not filtering findings for the affected files"
         )
-        return None
-    added = set()
-    for line in result.stdout.splitlines():
-        match = _HUNK_HEADER_RE.match(line)
-        if match is None:
-            continue
-        start = int(match.group(1))
-        count = int(match.group(2)) if match.group(2) is not None else 1
-        added.update(range(start, start + count))
-    return added
+        result.update({basename_to_path[name]: None for name in tracked_basenames})
+        return result
+    added_by_basename = _parse_grouped_diff_added_lines(diff.stdout, tracked_basenames)
+    for name in tracked_basenames:
+        result[basename_to_path[name]] = added_by_basename.get(name, set())
+    return result
+
+
+def _added_line_numbers_map(base_ref, file_paths):
+    groups = {}
+    for file_path in file_paths:
+        repo_dir = os.path.dirname(file_path) or "."
+        groups.setdefault(repo_dir, []).append(file_path)
+    result = {}
+    for repo_dir, group_file_paths in groups.items():
+        result.update(_added_line_numbers_for_group(base_ref, repo_dir, group_file_paths))
+    return result
+
+
+def _added_line_numbers(base_ref, file_path):
+    return _added_line_numbers_map(base_ref, [file_path])[file_path]
 
 
 def _touches_added_lines(span, added):
@@ -1477,6 +1527,7 @@ def _check_files(files, base=None):
         any_error = False
         any_blocking = False
         any_advisory = False
+        added_by_path = _added_line_numbers_map(base, files) if base else {}
         for file_path in files:
             try:
                 with open(file_path, encoding="utf-8") as handle:
@@ -1497,7 +1548,7 @@ def _check_files(files, base=None):
                 continue
 
             if base:
-                added = _added_line_numbers(base, file_path)
+                added = added_by_path.get(file_path)
                 if added is not None:
                     advisory = _restrict_to_added_lines(advisory, added)
 

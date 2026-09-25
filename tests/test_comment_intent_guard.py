@@ -1863,6 +1863,19 @@ def test_added_line_numbers_warns_and_returns_none_when_git_is_not_on_path(capsy
     assert "comment_intent_guard" in capsys.readouterr().err
 
 
+def test_added_line_numbers_on_an_untracked_file_returns_none(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "placeholder.txt").write_text("x\n")
+    subprocess.run(["git", "add", "placeholder.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    untracked_file = tmp_path / "new_config.yaml"
+    untracked_file.write_text("key: value\n")
+
+    added = guard._added_line_numbers("HEAD", str(untracked_file))
+
+    assert added is None
+
+
 def test_finding_ending_before_the_added_lines_is_filtered_out():
     assert guard._touches_added_lines((2, 3), {1}) is False
 
@@ -1879,6 +1892,78 @@ def test_single_line_hunk_header_without_a_count_adds_exactly_one_line(tmp_path)
     added = guard._added_line_numbers("HEAD", str(yaml_file))
 
     assert added == {2}
+
+
+def test_parse_porcelain_untracked_finds_an_untracked_entry_after_a_tracked_one():
+    porcelain_output = "M  a_tracked.py\n?? z_untracked.py\n"
+
+    untracked = guard._parse_porcelain_untracked(porcelain_output, ["a_tracked.py", "z_untracked.py"])
+
+    assert untracked == {"z_untracked.py"}
+
+
+def test_parse_grouped_diff_added_lines_tracks_file_boundaries_across_renames_and_deletes():
+    diff_output = (
+        "diff --git a/gone.py b/gone.py\n"
+        "deleted file mode 100644\n"
+        "index 1234567..0000000\n"
+        "--- a/gone.py\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n"
+        "-line1\n"
+        "-line2\n"
+        "diff --git a/old_name.py b/renamed.py\n"
+        "similarity index 80%\n"
+        "rename from old_name.py\n"
+        "rename to renamed.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/old_name.py\n"
+        "+++ b/renamed.py\n"
+        "@@ -3,0 +4,2 @@ def foo():\n"
+        "+added_one\n"
+        "+added_two\n"
+        "diff --git a/new_file.py b/new_file.py\n"
+        "new file mode 100644\n"
+        "index 0000000..abcdef1\n"
+        "--- /dev/null\n"
+        "+++ b/new_file.py\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+a\n"
+        "+b\n"
+        "+c\n"
+        "diff --git a/keep.py b/keep.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/keep.py\n"
+        "+++ b/keep.py\n"
+        "@@ -5,0 +6,2 @@ def bar():\n"
+        "+x\n"
+        "+y\n"
+    )
+
+    added = guard._parse_grouped_diff_added_lines(diff_output, ["renamed.py", "new_file.py", "keep.py"])
+
+    assert added == {
+        "renamed.py": {4, 5},
+        "new_file.py": {1, 2, 3},
+        "keep.py": {6, 7},
+    }
+
+
+def test_added_line_numbers_map_treats_an_untouched_tracked_file_as_no_added_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    unchanged_file = tmp_path / "unchanged.yaml"
+    unchanged_file.write_text("old_key: value\n")
+    changed_file = tmp_path / "changed.yaml"
+    changed_file.write_text("old_key: value\n")
+    subprocess.run(["git", "add", "unchanged.yaml", "changed.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    changed_file.write_text("old_key: value\nnew_key: value\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(unchanged_file), str(changed_file)])
+
+    assert added[str(unchanged_file)] == set()
+    assert added[str(changed_file)] == {2}
 
 
 def test_added_line_numbers_against_a_real_repo_returns_only_the_appended_lines(tmp_path):

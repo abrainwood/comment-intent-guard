@@ -1,6 +1,7 @@
 import importlib.util
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,19 @@ def _write(path, relpath, content):
 def _write_hanging_fake_git(bin_dir):
     fake_git = bin_dir / "git"
     fake_git.write_text("#!/bin/sh\nexec sleep 5\n")
+    fake_git.chmod(0o755)
+
+
+def _write_diff_hanging_fake_git(bin_dir):
+    real_git = subprocess.run(["which", "git"], capture_output=True, text=True, check=True).stdout.strip()
+    fake_git = bin_dir / "git"
+    fake_git.write_text(
+        "#!/bin/sh\n"
+        "case \" $* \" in\n"
+        "  *' diff '*) exec sleep 5 ;;\n"
+        f"  *) exec {real_git} \"$@\" ;;\n"
+        "esac\n"
+    )
     fake_git.chmod(0o755)
 
 
@@ -197,3 +211,79 @@ def test_added_line_numbers_returns_none_on_git_timeout(tmp_path, monkeypatch, c
 
     assert result is None
     assert "not filtering findings" in capsys.readouterr().err.lower()
+
+
+def test_scan_base_head_batches_added_line_lookups_regardless_of_file_count(tmp_path, monkeypatch):
+    _init_repo(tmp_path)
+    filenames = ["a.py", "b.py", "c.py", "d.py"]
+    for name in filenames:
+        _write(tmp_path, name, "x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
+        cwd=tmp_path, check=True,
+    )
+    for name in filenames:
+        _write(tmp_path, name, "x = 1\ny = 2\n")
+
+    monkeypatch.setattr(guard, "_scan_git_toplevel", lambda: str(tmp_path))
+    monkeypatch.setattr(guard, "_scan_head_sha", lambda repo_root: "HEAD")
+    monkeypatch.setattr(guard, "_scan_list_tracked", lambda repo_root, head_sha: filenames)
+    monkeypatch.setattr(guard, "_scan_list_untracked", lambda repo_root: [])
+    monkeypatch.chdir(tmp_path)
+
+    real_run = subprocess.run
+    calls = []
+
+    def _counting_run(*args, **kwargs):
+        calls.append(args)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(guard.subprocess, "run", _counting_run)
+
+    guard._scan_main()
+
+    assert len(calls) <= 2
+
+
+def test_added_line_numbers_map_bounds_the_diff_call_by_the_configured_timeout(tmp_path, monkeypatch):
+    _init_repo(tmp_path)
+    target = _write(tmp_path, "a.py", "x = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
+        cwd=tmp_path, check=True,
+    )
+    _write_diff_hanging_fake_git(tmp_path)
+    _prepend_to_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.2)
+
+    started_at = time.monotonic()
+    result = guard._added_line_numbers_map("HEAD", [str(target)])
+    elapsed = time.monotonic() - started_at
+
+    assert result == {str(target): None}
+    assert elapsed < 2
+
+
+def test_added_line_numbers_map_degrades_every_file_in_the_group_on_git_timeout(tmp_path, monkeypatch, capsys):
+    _init_repo(tmp_path)
+    filenames = ["a.py", "b.py", "c.py"]
+    targets = [_write(tmp_path, name, "x = 1\n") for name in filenames]
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
+        cwd=tmp_path, check=True,
+    )
+    _write_hanging_fake_git(tmp_path)
+    _prepend_to_path(monkeypatch, tmp_path)
+    monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.05)
+
+    result = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert result == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "not filtering findings" in stderr.lower()
+    assert "timeoutexpired" in stderr.lower()
+    for target in targets:
+        assert str(target) in stderr
