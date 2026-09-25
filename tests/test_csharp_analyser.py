@@ -193,7 +193,7 @@ def test_doc_comment_with_a_stray_triple_slash_line_before_the_signature_is_bloc
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     expected = (_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))
-    assert violations == [expected, expected]
+    assert violations == [expected]
 
 
 def test_doc_comment_before_a_fully_qualified_attribute_is_blocked():
@@ -891,3 +891,49 @@ def test_doc_comment_before_an_attribute_with_a_bracket_inside_a_string_argument
     assert violations == [
         (_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3)),
     ]
+
+
+def test_doc_comment_before_a_second_attribute_names_the_method_not_the_attribute():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        '[Trait("a", "b")]\n'
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 4), (4, 4))]
+
+
+def test_doc_comment_before_two_stacked_attributes_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        '[Trait("a", "b")]\n'
+        "[Trait(\"c\", \"d\")]\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 5), (5, 5))]
+
+
+def test_doc_comment_before_and_after_the_attribute_produces_one_finding():
+    text = (
+        "/// before\n"
+        "[Fact]\n"
+        "/// after\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 4), (4, 4))]

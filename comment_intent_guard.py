@@ -743,23 +743,36 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
 
 def _csharp_method_signature_immediately_after_doc_block(lines, end_li):
     li = end_li + 1
-    while li < len(lines) and not lines[li].strip():
+    while li < len(lines):
+        if not lines[li].strip() or lines[li].strip().startswith("///"):
+            li += 1
+            continue
+        group = _csharp_line_attribute_group(lines[li])
+        if group is None:
+            break
+        _attrs_text, remainder = group
+        if remainder.strip():
+            break
         li += 1
     if li >= len(lines):
         return None
-    match = _CSHARP_METHOD_NAME_RE.search(lines[li])
+    group = _csharp_line_attribute_group(lines[li])
+    search_text = group[1] if group is not None else lines[li]
+    match = _CSHARP_METHOD_NAME_RE.search(search_text)
     return (match.group(1), li + 1) if match else None
 
 
 def _csharp_test_doc_blocking_violations(spans, lines):
     violations = []
+    seen_rows = set()
     for kind, start_li, end_li, _content in spans:
         if kind != "doc":
             continue
         found = _csharp_test_method_after_doc_block(lines, end_li)
         if found is None and _csharp_test_attribute_before_doc_block(lines, start_li):
             found = _csharp_method_signature_immediately_after_doc_block(lines, end_li)
-        if found is not None:
+        if found is not None and found[1] not in seen_rows:
+            seen_rows.add(found[1])
             name, row = found
             violation = _test_docstring_violation(name, row, "an XML doc comment", "XML doc comment")
             violations.append((violation, (row, row)))
