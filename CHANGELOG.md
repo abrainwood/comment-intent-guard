@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-09-26
+
+### Fixed
+
+- C# unterminated `/*` on an attribute line no longer hides the following
+  doc block - PR #53 (C#: unterminated /* on an attribute line hides the
+  following doc block), closing issue #49. The lookahead now threads a
+  resolved `(line, rest)` through the attribute walk via a single
+  `_csharp_skip_comments` helper instead of re-deriving it from the raw
+  line.
+- C# block and line comments between two attributes on one line now
+  report the method, not the attribute - PR #56 (C#: block comment
+  between two attributes on one line names the attribute, not the
+  method), closing issue #50. Fixes both the forward and backward
+  attribute walk; `_csharp_is_only_comments` is deleted in favour of
+  `_csharp_skip_comments`.
+- C# a closed multi-line block comment between an attribute and a doc
+  block is now handled on the backward path - PR #57 (C#: skip closed
+  multi-line block comment on the backward attribute path), closing
+  issue #55. Adds `_csharp_find_block_comment_open`, mirroring the
+  existing forward `_csharp_find_block_comment_close`.
+- `scan --base` batching leftovers from #29 (PR #54, closing issue #51):
+  a chunk failure now names only the failing chunk in its warning instead
+  of the whole group; both the `"a.py"` and `"./a.py"` spellings of the
+  same file are kept in the result instead of one silently dropping the
+  other; the scan path skips the redundant `git status` call since its
+  file list already comes from `git diff --name-only`; a `git status`
+  failure on one chunk now degrades only that chunk's files, matching the
+  diff loop's existing per-chunk degradation (a behaviour change from the
+  prior whole-group degrade); two flaky timing-dependent tests fixed. The
+  status and diff loops now share one `_run_chunked_git_command` helper.
+
+### Changed
+
+- `tests/test_bin_scan.py` and `tests/test_scan_listing.py` migrated onto
+  the session-scoped `git_repo` template fixture, the same pattern used
+  for `test_init.py`/`test_workflows.py` under #39 - part of PR #54,
+  closing issue #48's remaining item. Issue #48's other item,
+  `scripts/mutate.sh` verified end-to-end on Linux, is also closed; scan
+  tests run against the session repo template.
+
+### Known gaps
+
+- Issue #58 (C# stacked multi-line block comments between an attribute
+  and a doc block, e.g. two chained `/* ... */` comments, are still
+  missed on the backward path).
+
 ## [1.2.0] - 2026-09-25
 
 ### Fixed
