@@ -687,6 +687,16 @@ def _csharp_find_block_comment_close(lines, li):
     return None
 
 
+def _csharp_find_block_comment_open(lines, li):
+    li -= 1
+    while li >= 0:
+        idx = lines[li].rfind("/*")
+        if idx != -1:
+            return li, lines[li][:idx]
+        li -= 1
+    return None
+
+
 def _csharp_skip_comments(lines, li, text):
     rest = text.strip()
     while True:
@@ -768,7 +778,13 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
         return False
     group = _csharp_line_attribute_group(lines, li)
     if group is None:
-        return False
+        opened = _csharp_find_block_comment_open(lines, li)
+        if opened is None:
+            return False
+        li, _prefix = opened
+        group = _csharp_line_attribute_group(lines, li)
+        if group is None:
+            return False
     attrs_text, _, remainder = group
     if remainder != "":
         return False
