@@ -6,6 +6,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-09-25
+
+### Fixed
+
+- C# doc-block findings now name the method, not a trailing attribute, and
+  report one finding per method instead of a duplicate - PR #44 (C#: name
+  the method, not the attribute, and dedupe doc-block findings), closing
+  issue #35 (C#: doc block between [Fact] and a second attribute reports
+  the attribute name, not the method). Trailing comments on an attribute
+  line no longer hide the doc block on either the forward or backward
+  lookup.
+- `scan --base` now issues one `git status` and one `git diff` per
+  repository instead of two per file, with correct handling of quoted,
+  non-ASCII, and space-containing paths and of files reached through a
+  symlink - PR #47 (Batch _added_line_numbers git calls), closing issue
+  #29 (scan --base HEAD: batch the per-file _added_line_numbers git
+  calls).
+
+### Changed
+
+- The backstop diff parser now lives in `comment_intent_guard.py`, shared
+  by the guard and the Bash backstop hook; the test suite runs off shared
+  session-scoped templates and uses `pytest-xdist` in CI - PR #46 (Test
+  suite speed and hygiene), closing issue #39 (Test suite speed and
+  hygiene follow-ups from audit 2).
+
+### Removed
+
+- `docs/shippable-packaging.md`, pre-public planning notes not relevant to
+  plugin contributors - PR #45 (Remove internal packaging notes doc).
+
+### Known gaps
+
+- Issue #49 (an attribute line with a genuinely unterminated `/*` followed
+  by real code is treated as comment-only) and issue #50 (a block comment
+  between two attributes on one line makes the violation report against
+  the attribute name instead of the method below it).
+
 ## [1.1.0] - 2026-09-25
 
 ### Added

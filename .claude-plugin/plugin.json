@@ -1,6 +1,6 @@
 {
   "name": "comment-intent-guard",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Denies rationale written into source comments - test docstrings, ticket ids, dates, SHAs - at Write/Edit time, and advises on the rest. Python, YAML, Jinja, C#.",
   "author": {
     "name": "Andrew Brainwood",
