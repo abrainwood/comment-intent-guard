@@ -937,3 +937,87 @@ def test_doc_comment_before_and_after_the_attribute_produces_one_finding():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [(_csharp_test_doc_violation("T", 4), (4, 4))]
+
+
+def test_doc_comment_before_a_blank_line_then_the_signature_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        "\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 4), (4, 4))]
+
+
+def test_doc_comment_before_a_stray_triple_slash_line_then_the_signature_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        '[Trait("a", "b")]\n'
+        "/// stray\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 5), (5, 5))]
+
+
+def test_doc_comment_before_a_blank_line_and_a_stray_triple_slash_line_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        "\n"
+        "/// stray\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 5), (5, 5))]
+
+
+def test_doc_comment_before_a_same_line_second_attribute_and_signature_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        '[Trait("a", "b")] public void T()\n'
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 3), (3, 3))]
+
+
+def test_doc_comment_before_an_attribute_with_no_method_following_is_not_blocked():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        "int x = 5;\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_doc_comment_before_an_attribute_at_end_of_file_is_not_blocked():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
