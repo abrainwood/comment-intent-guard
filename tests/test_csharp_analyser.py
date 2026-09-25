@@ -1098,6 +1098,73 @@ def test_javadoc_block_between_the_attribute_and_the_signature_is_blocked():
 @pytest.mark.parametrize(
     "attribute_line",
     [
+        pytest.param("[Fact] // x", id="trailing_line_comment"),
+        pytest.param("[Fact] /* a */ /* b */", id="two_trailing_block_comments"),
+    ],
+)
+def test_doc_comment_after_an_attribute_with_a_trailing_comment_is_blocked(attribute_line):
+    text = (
+        f"{attribute_line}\n"
+        "/// doc\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 3), (3, 3))]
+
+
+def test_doc_comment_after_a_blank_line_after_a_test_attribute_is_blocked():
+    text = (
+        "[Fact]\n"
+        "\n"
+        "/// doc\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("T", 4), (4, 4))]
+
+
+def test_doc_comment_after_a_blank_line_after_a_non_attribute_line_after_an_attribute_is_not_blocked():
+    text = (
+        "using System;\n"
+        "[Fact]\n"
+        "GC.Collect();\n"
+        "\n"
+        "/// doc\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_doc_comment_after_an_attribute_with_real_trailing_code_is_not_blocked():
+    text = (
+        "[Fact] someMethod();\n"
+        "/// doc\n"
+        "public void T()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+@pytest.mark.parametrize(
+    "attribute_line",
+    [
         pytest.param("[Fact] /* a */ // b", id="block_then_line_comment"),
         pytest.param("[Fact] /* a */ /* b */", id="two_block_comments"),
         pytest.param("[Fact] // a /* b */", id="line_comment_containing_block_syntax"),

@@ -755,7 +755,7 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
     if group is None:
         return False
     attrs_text, remainder = group
-    if remainder.strip():
+    if not _csharp_is_only_comments(remainder):
         return False
     names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
     return any(_is_csharp_test_attribute(n) for n in names)
