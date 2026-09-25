@@ -71,7 +71,7 @@ To pin the plugin for a whole team, commit `.claude/settings.json` with:
 
   jobs:
     comment-guard:
-      uses: abrainwood/comment-intent-guard/.github/workflows/gate.yml@comment-intent-guard--v1.2.0
+      uses: abrainwood/comment-intent-guard/.github/workflows/gate.yml@comment-intent-guard--v1.2.1
   ```
 
 ## Skills
@@ -187,7 +187,7 @@ scores are in issue #31.
 ## Releases
 
 Tags are `comment-intent-guard--vX.Y.Z`. `gate.yml` pins a specific tag via
-its `guard-ref` input (default `comment-intent-guard--v1.2.0`). To pick up a
+its `guard-ref` input (default `comment-intent-guard--v1.2.1`). To pick up a
 new release in an installed plugin, run
 `claude plugin update comment-intent-guard@comment-intent-guard` and restart
 Claude Code.
