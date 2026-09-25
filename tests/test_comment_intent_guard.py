@@ -2020,7 +2020,7 @@ def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_diff_exi
         assert str(target) in stderr
 
 
-def test_added_line_numbers_map_warns_and_degrades_every_file_in_a_single_chunk_group_when_status_exits_non_zero(tmp_path, capsys):
+def test_added_line_numbers_map_warns_and_degrades_a_single_chunk_group_when_status_exits_non_zero(tmp_path, capsys):
     _init_git_repo(tmp_path)
     filenames = ["a.py", "b.py"]
     targets = [tmp_path / name for name in filenames]
@@ -2045,7 +2045,7 @@ def test_added_line_numbers_map_warns_and_degrades_every_file_in_a_single_chunk_
     assert "exit 1" in stderr
 
 
-def test_added_line_numbers_map_warns_and_degrades_every_file_in_a_single_chunk_group_when_status_raises_oserror(tmp_path, capsys):
+def test_added_line_numbers_map_warns_and_degrades_a_single_chunk_group_when_status_raises_oserror(tmp_path, capsys):
     _init_git_repo(tmp_path)
     filenames = ["a.py", "b.py"]
     targets = [tmp_path / name for name in filenames]
