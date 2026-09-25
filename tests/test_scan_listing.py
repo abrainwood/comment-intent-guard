@@ -249,6 +249,46 @@ def test_check_files_with_base_batches_git_calls_and_filters_a_preexisting_findi
     assert exit_code == guard._EXIT_CLEAN
 
 
+def test_check_files_with_base_collapses_multiple_subdirectories_of_one_repo_into_one_call_pair(
+    tmp_path, monkeypatch, capsys
+):
+    _init_repo(tmp_path)
+    preexisting_comment_run = "# one\n# two\n# three\n# four\n# five\n"
+    relpaths = ["root.py", "sub_a/a.py", "sub_b/b.py"]
+    for relpath in relpaths:
+        _write(tmp_path, relpath, preexisting_comment_run + "x = 1\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
+        cwd=tmp_path, check=True,
+    )
+    for relpath in relpaths:
+        _write(tmp_path, relpath, preexisting_comment_run + "x = 1\ny = 2\n")
+
+    monkeypatch.chdir(tmp_path)
+
+    real_run = subprocess.run
+    calls = []
+
+    def _counting_run(args, **kwargs):
+        calls.append(args)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(guard.subprocess, "run", _counting_run)
+
+    files = [str(tmp_path / relpath) for relpath in relpaths]
+    exit_code = guard._check_files(files, base="HEAD")
+
+    status_calls = [call for call in calls if "status" in call]
+    diff_calls = [call for call in calls if "diff" in call]
+    assert len(status_calls) == 1
+    assert len(diff_calls) == 1
+
+    stdout = capsys.readouterr().out
+    assert "Comment run of" not in stdout
+    assert exit_code == guard._EXIT_CLEAN
+
+
 def test_added_line_numbers_map_bounds_the_diff_call_by_the_configured_timeout(tmp_path, monkeypatch):
     _init_repo(tmp_path)
     target = _write(tmp_path, "a.py", "x = 1\n")

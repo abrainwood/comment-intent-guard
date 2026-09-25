@@ -1980,6 +1980,87 @@ def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_e
     assert "exit 1" in stderr
 
 
+def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_raises_oserror(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_rev_parse(args, **kwargs):
+        if "rev-parse" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_rev_parse):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "rev-parse" in stderr
+    assert "OSError" in stderr
+    assert str(tmp_path) in stderr
+
+
+def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_rev_parse(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="fake rev-parse failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_rev_parse):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "fake rev-parse failure" in stderr
+    assert "exit 128" in stderr
+    assert str(tmp_path) in stderr
+
+
+def test_added_line_numbers_map_degrades_the_group_when_git_diff_raises_oserror(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    for target in targets:
+        target.write_text("x = 1\ny = 2\n")
+
+    real_run = subprocess.run
+
+    def _fail_diff(args, **kwargs):
+        if "diff" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_diff):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "git diff" in stderr
+    assert "OSError" in stderr
+    for target in targets:
+        assert str(target.name) in stderr
+
+
 def test_joined_for_message_lists_every_path_at_or_under_the_limit():
     assert guard._joined_for_message(["a", "b", "c"]) == "a, b, c"
 
