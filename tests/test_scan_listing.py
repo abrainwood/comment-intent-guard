@@ -19,15 +19,6 @@ def _load_module():
 guard = _load_module()
 
 
-def _init_repo(path):
-    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t",
-         "commit", "-q", "--allow-empty", "-m", "init"],
-        cwd=path, check=True,
-    )
-
-
 def _write(path, relpath, content):
     target = path / relpath
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -143,76 +134,71 @@ def test_scan_head_sha_on_an_unborn_repo_returns_none_without_raising(tmp_path):
     assert guard._scan_head_sha(str(tmp_path)) is None
 
 
-def test_scan_main_returns_4_when_tracked_listing_raises_scan_git_error(tmp_path, monkeypatch):
-    _init_repo(tmp_path)
-    monkeypatch.setattr(guard, "_scan_git_toplevel", lambda: str(tmp_path))
+def test_scan_main_returns_4_when_tracked_listing_raises_scan_git_error(git_repo, monkeypatch):
+    monkeypatch.setattr(guard, "_scan_git_toplevel", lambda: str(git_repo))
     monkeypatch.setattr(guard, "_scan_head_sha", lambda repo_root: "deadbeef")
 
     def _raise(*_args, **_kwargs):
         raise guard._ScanGitError
 
     monkeypatch.setattr(guard, "_scan_list_tracked", _raise)
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(git_repo)
 
     assert guard._scan_main() == 4
 
 
-def test_scan_list_untracked_only_returns_pathspec_matching_files(tmp_path):
-    _init_repo(tmp_path)
-    _write(tmp_path, "checked.py", "x\n")
-    _write(tmp_path, "notes.txt", "x\n")
+def test_scan_list_untracked_only_returns_pathspec_matching_files(git_repo):
+    _write(git_repo, "checked.py", "x\n")
+    _write(git_repo, "notes.txt", "x\n")
 
-    assert guard._scan_list_untracked(str(tmp_path)) == ["checked.py"]
+    assert guard._scan_list_untracked(str(git_repo)) == ["checked.py"]
 
 
-def test_scan_list_tracked_only_returns_pathspec_matching_files(tmp_path):
-    _init_repo(tmp_path)
-    _write(tmp_path, "checked.py", "x\n")
-    _write(tmp_path, "notes.txt", "x\n")
-    subprocess.run(["git", "add", "checked.py", "notes.txt"], cwd=tmp_path, check=True)
+def test_scan_list_tracked_only_returns_pathspec_matching_files(git_repo):
+    _write(git_repo, "checked.py", "x\n")
+    _write(git_repo, "notes.txt", "x\n")
+    subprocess.run(["git", "add", "checked.py", "notes.txt"], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
-        cwd=tmp_path, check=True,
+        cwd=git_repo, check=True,
     )
-    (tmp_path / "checked.py").write_text("y\n")
-    (tmp_path / "notes.txt").write_text("y\n")
+    (git_repo / "checked.py").write_text("y\n")
+    (git_repo / "notes.txt").write_text("y\n")
 
-    head_sha = guard._scan_head_sha(str(tmp_path))
+    head_sha = guard._scan_head_sha(str(git_repo))
 
-    assert guard._scan_list_tracked(str(tmp_path), head_sha) == ["checked.py"]
+    assert guard._scan_list_tracked(str(git_repo), head_sha) == ["checked.py"]
 
 
-def test_scan_list_tracked_excludes_a_file_dropped_from_the_index_but_still_on_disk(tmp_path):
-    _init_repo(tmp_path)
-    _write(tmp_path, "a.py", "x\n")
-    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+def test_scan_list_tracked_excludes_a_file_dropped_from_the_index_but_still_on_disk(git_repo):
+    _write(git_repo, "a.py", "x\n")
+    subprocess.run(["git", "add", "a.py"], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
-        cwd=tmp_path, check=True,
+        cwd=git_repo, check=True,
     )
-    subprocess.run(["git", "rm", "--cached", "-q", "a.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "rm", "--cached", "-q", "a.py"], cwd=git_repo, check=True)
 
-    head_sha = guard._scan_head_sha(str(tmp_path))
+    head_sha = guard._scan_head_sha(str(git_repo))
 
-    assert guard._scan_list_tracked(str(tmp_path), head_sha) == []
-    assert guard._scan_list_untracked(str(tmp_path)) == ["a.py"]
+    assert guard._scan_list_tracked(str(git_repo), head_sha) == []
+    assert guard._scan_list_untracked(str(git_repo)) == ["a.py"]
 
 
-def test_check_files_with_base_batches_git_calls_and_filters_a_preexisting_finding(tmp_path, monkeypatch, capsys):
-    _init_repo(tmp_path)
+def test_check_files_with_base_batches_git_calls_and_filters_a_preexisting_finding(git_repo, monkeypatch, capsys):
     preexisting_comment_run = "# one\n# two\n# three\n# four\n# five\n"
     filenames = ["a.py", "b.py", "c.py", "d.py"]
     for name in filenames:
-        _write(tmp_path, name, preexisting_comment_run + "x = 1\n")
-    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+        _write(git_repo, name, preexisting_comment_run + "x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
-        cwd=tmp_path, check=True,
+        cwd=git_repo, check=True,
     )
     for name in filenames:
-        _write(tmp_path, name, preexisting_comment_run + "x = 1\ny = 2\n")
+        _write(git_repo, name, preexisting_comment_run + "x = 1\ny = 2\n")
 
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(git_repo)
 
     real_run = subprocess.run
     calls = []
@@ -223,7 +209,7 @@ def test_check_files_with_base_batches_git_calls_and_filters_a_preexisting_findi
 
     monkeypatch.setattr(guard.subprocess, "run", _counting_run)
 
-    files = [str(tmp_path / name) for name in filenames]
+    files = [str(git_repo / name) for name in filenames]
     exit_code = guard._check_files(files, base="HEAD")
 
     status_calls = [call for call in calls if "status" in call]
@@ -236,23 +222,20 @@ def test_check_files_with_base_batches_git_calls_and_filters_a_preexisting_findi
     assert exit_code == guard._EXIT_CLEAN
 
 
-def test_check_files_with_base_collapses_multiple_subdirectories_of_one_repo_into_one_call_pair(
-    tmp_path, monkeypatch, capsys
-):
-    _init_repo(tmp_path)
+def test_check_files_for_already_tracked_files_skips_the_status_call(git_repo, monkeypatch, capsys):
     preexisting_comment_run = "# one\n# two\n# three\n# four\n# five\n"
-    relpaths = ["root.py", "sub_a/a.py", "sub_b/b.py"]
-    for relpath in relpaths:
-        _write(tmp_path, relpath, preexisting_comment_run + "x = 1\n")
-    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    filenames = ["a.py", "b.py"]
+    for name in filenames:
+        _write(git_repo, name, preexisting_comment_run + "x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
-        cwd=tmp_path, check=True,
+        cwd=git_repo, check=True,
     )
-    for relpath in relpaths:
-        _write(tmp_path, relpath, preexisting_comment_run + "x = 1\ny = 2\n")
+    for name in filenames:
+        _write(git_repo, name, preexisting_comment_run + "x = 1\ny = 2\n")
 
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(git_repo)
 
     real_run = subprocess.run
     calls = []
@@ -263,8 +246,47 @@ def test_check_files_with_base_collapses_multiple_subdirectories_of_one_repo_int
 
     monkeypatch.setattr(guard.subprocess, "run", _counting_run)
 
-    files = [str(tmp_path / relpath) for relpath in relpaths]
-    exit_code = guard._check_files(files, base="HEAD", repo_root=str(tmp_path))
+    files = [str(git_repo / name) for name in filenames]
+    exit_code = guard._check_files(files, base="HEAD", repo_root=str(git_repo), files_are_tracked=True)
+
+    status_calls = [call for call in calls if "status" in call]
+    diff_calls = [call for call in calls if "diff" in call]
+    assert len(status_calls) == 0
+    assert len(diff_calls) == 1
+
+    stdout = capsys.readouterr().out
+    assert "Comment run of" not in stdout
+    assert exit_code == guard._EXIT_CLEAN
+
+
+def test_check_files_with_base_collapses_multiple_subdirectories_of_one_repo_into_one_call_pair(
+    git_repo, monkeypatch, capsys
+):
+    preexisting_comment_run = "# one\n# two\n# three\n# four\n# five\n"
+    relpaths = ["root.py", "sub_a/a.py", "sub_b/b.py"]
+    for relpath in relpaths:
+        _write(git_repo, relpath, preexisting_comment_run + "x = 1\n")
+    subprocess.run(["git", "add", "."], cwd=git_repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
+        cwd=git_repo, check=True,
+    )
+    for relpath in relpaths:
+        _write(git_repo, relpath, preexisting_comment_run + "x = 1\ny = 2\n")
+
+    monkeypatch.chdir(git_repo)
+
+    real_run = subprocess.run
+    calls = []
+
+    def _counting_run(args, **kwargs):
+        calls.append(args)
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(guard.subprocess, "run", _counting_run)
+
+    files = [str(git_repo / relpath) for relpath in relpaths]
+    exit_code = guard._check_files(files, base="HEAD", repo_root=str(git_repo))
 
     assert len(calls) == 2
     status_calls = [call for call in calls if "status" in call]
@@ -277,17 +299,16 @@ def test_check_files_with_base_collapses_multiple_subdirectories_of_one_repo_int
     assert exit_code == guard._EXIT_CLEAN
 
 
-def test_added_line_numbers_map_degrades_every_file_in_the_group_on_diff_timeout(tmp_path, monkeypatch, capsys):
-    _init_repo(tmp_path)
+def test_added_line_numbers_map_degrades_every_file_in_the_group_on_diff_timeout(git_repo, monkeypatch, capsys):
     filenames = ["a.py", "b.py", "c.py"]
-    targets = [_write(tmp_path, name, "x = 1\n") for name in filenames]
-    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    targets = [_write(git_repo, name, "x = 1\n") for name in filenames]
+    subprocess.run(["git", "add", *filenames], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
-        cwd=tmp_path, check=True,
+        cwd=git_repo, check=True,
     )
-    _write_diff_hanging_fake_git(tmp_path)
-    _prepend_to_path(monkeypatch, tmp_path)
+    _write_diff_hanging_fake_git(git_repo)
+    _prepend_to_path(monkeypatch, git_repo)
     monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.5)
 
     started_at = time.monotonic()
@@ -304,15 +325,14 @@ def test_added_line_numbers_map_degrades_every_file_in_the_group_on_diff_timeout
 
 
 def test_added_line_numbers_map_degrades_every_file_when_status_times_out_before_any_diff(
-    tmp_path, monkeypatch, capsys
+    git_repo, monkeypatch, capsys
 ):
-    _init_repo(tmp_path)
     filenames = ["a.py", "b.py", "c.py"]
-    targets = [_write(tmp_path, name, "x = 1\n") for name in filenames]
-    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    targets = [_write(git_repo, name, "x = 1\n") for name in filenames]
+    subprocess.run(["git", "add", *filenames], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
-        cwd=tmp_path, check=True,
+        cwd=git_repo, check=True,
     )
     real_run = subprocess.run
 
@@ -334,15 +354,14 @@ def test_added_line_numbers_map_degrades_every_file_when_status_times_out_before
 
 
 def test_added_line_numbers_map_degrades_every_file_when_git_toplevel_resolution_times_out(
-    tmp_path, monkeypatch, capsys
+    git_repo, monkeypatch, capsys
 ):
-    _init_repo(tmp_path)
     filenames = ["a.py", "b.py", "c.py"]
-    targets = [_write(tmp_path, name, "x = 1\n") for name in filenames]
-    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    targets = [_write(git_repo, name, "x = 1\n") for name in filenames]
+    subprocess.run(["git", "add", *filenames], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
-        cwd=tmp_path, check=True,
+        cwd=git_repo, check=True,
     )
     real_run = subprocess.run
 
@@ -360,4 +379,4 @@ def test_added_line_numbers_map_degrades_every_file_when_git_toplevel_resolution
     stderr = capsys.readouterr().err
     assert "not filtering findings" in stderr.lower()
     assert "rev-parse" in stderr.lower()
-    assert str(tmp_path) in stderr
+    assert str(git_repo) in stderr
