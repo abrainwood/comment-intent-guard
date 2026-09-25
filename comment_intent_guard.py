@@ -701,13 +701,14 @@ def _csharp_line_attribute_group(line):
     return (line[start:match_end], line[match_end:])
 
 
-def _csharp_strip_trailing_comment(text):
-    stripped = text.rstrip()
-    if stripped.endswith("*/"):
-        open_idx = stripped.rfind("/*")
-        return stripped[:open_idx].rstrip() if open_idx != -1 else stripped
-    slash_idx = stripped.find("//")
-    return stripped[:slash_idx].rstrip() if slash_idx != -1 else stripped
+def _csharp_is_only_comments(text):
+    rest = text.strip()
+    while rest.startswith("/*"):
+        close = rest.find("*/", 2)
+        if close == -1:
+            return True
+        rest = rest[close + 2:].lstrip()
+    return rest == "" or rest.startswith("//")
 
 
 def _csharp_walk_past_attribute_lines(lines, start_li):
@@ -722,7 +723,7 @@ def _csharp_walk_past_attribute_lines(lines, start_li):
             break
         attrs_text, remainder = group
         attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
-        if _csharp_strip_trailing_comment(remainder).strip():
+        if not _csharp_is_only_comments(remainder):
             break
         li += 1
     return li, attribute_names
