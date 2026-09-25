@@ -14,7 +14,7 @@ def _init_tmp_repo(git_repo):
     )
 
 
-def test_bare_repo_gets_all_four_files_with_hookspath_set_and_pre_commit_executable(tmp_path):
+def test_init_sh_gets_all_four_files_with_hookspath_set_and_pre_commit_executable_in_an_unborn_repo(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
 
     result = _init_tmp_repo(tmp_path)
@@ -40,7 +40,7 @@ def test_bare_repo_gets_all_four_files_with_hookspath_set_and_pre_commit_executa
     assert "core.hooksPath set to .githooks" in result.stdout
 
 
-def test_pre_commit_sh_blocks_a_staged_violation_in_a_bare_repo(tmp_path):
+def test_pre_commit_sh_blocks_a_staged_violation_in_an_unborn_repo(tmp_path):
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     _stage_violation(tmp_path)
 

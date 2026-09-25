@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from conftest import _copy_template, _run
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _GATE_YML = _REPO_ROOT / ".github" / "workflows" / "gate.yml"
@@ -47,26 +48,20 @@ _BASH = _bash_with_mapfile()
 
 
 @pytest.fixture(scope="session")
-def gate_test_repo_template(tmp_path_factory):
-    template = tmp_path_factory.mktemp("gate_test_repo_template")
-    subprocess.run(["git", "init", "-q"], cwd=template, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=template, check=True)
-    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=template, check=True)
-    subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=template, check=True)
+def gate_test_repo_template(tmp_path_factory, git_repo_template):
+    template = _copy_template(git_repo_template, tmp_path_factory.mktemp("gate_test_repo_template"))
     (template / "base.py").write_text("x = 1\n")
-    subprocess.run(["git", "add", "."], cwd=template, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=template, check=True)
-    subprocess.run(["git", "branch", "origin/main"], cwd=template, check=True)
+    _run(["git", "add", "."], cwd=template)
+    _run(["git", "commit", "-q", "-m", "base"], cwd=template)
+    _run(["git", "branch", "origin/main"], cwd=template)
     (template / "thing.py").write_text("y = 2\n")
-    subprocess.run(["git", "add", "."], cwd=template, check=True)
-    subprocess.run(["git", "commit", "-q", "-m", "change"], cwd=template, check=True)
+    _run(["git", "add", "."], cwd=template)
+    _run(["git", "commit", "-q", "-m", "change"], cwd=template)
     return template
 
 
 def _init_gate_test_repo(tmp_path, template):
-    repo = tmp_path / "repo"
-    shutil.copytree(template, repo)
+    repo = _copy_template(template, tmp_path)
     checkout_dir = repo / ".comment-intent-guard-checkout"
     checkout_dir.mkdir()
     return repo, checkout_dir / "comment_intent_guard.py"
