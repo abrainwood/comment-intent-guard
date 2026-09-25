@@ -1559,39 +1559,42 @@ def _resolved_path(path):
     return os.path.join(resolved_dir, os.path.basename(path))
 
 
-def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths):
-    relpath_to_path = {os.path.relpath(_resolved_path(path), toplevel): path for path in group_file_paths}
-    relpaths = list(relpath_to_path)
-    joined = _joined_for_message(group_file_paths)
+def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files_are_tracked=False):
+    relpath_to_paths = {}
+    for path in group_file_paths:
+        relpath_to_paths.setdefault(os.path.relpath(_resolved_path(path), toplevel), []).append(path)
+    relpaths = list(relpath_to_paths)
 
     untracked = set()
-    for chunk in _chunked(relpaths, _PATHSPEC_CHUNK_SIZE):
-        try:
-            status = subprocess.run(
-                ["git", "--literal-pathspecs", "-C", toplevel, "status", "--porcelain", "-z", "--", *chunk],
-                capture_output=True, text=True, timeout=_SCAN_GIT_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            _warn(
-                f"git status timed out after {_SCAN_GIT_TIMEOUT_SECONDS}s for {joined} - "
-                "not filtering findings for these files"
-            )
-            return {path: None for path in group_file_paths}
-        except OSError as exc:
-            _warn(
-                f"could not run git status for {joined} ({type(exc).__name__}) - "
-                "not filtering findings for these files"
-            )
-            return {path: None for path in group_file_paths}
-        if status.returncode != 0:
-            _warn(
-                f"git status failed for {joined} (exit {status.returncode}): "
-                f"{status.stderr.strip()} - not filtering findings for these files"
-            )
-            return {path: None for path in group_file_paths}
-        untracked.update(_parse_porcelain_untracked(status.stdout, chunk))
+    if not files_are_tracked:
+        for chunk in _chunked(relpaths, _PATHSPEC_CHUNK_SIZE):
+            joined = _joined_for_message(path for relpath in chunk for path in relpath_to_paths[relpath])
+            try:
+                status = subprocess.run(
+                    ["git", "--literal-pathspecs", "-C", toplevel, "status", "--porcelain", "-z", "--", *chunk],
+                    capture_output=True, text=True, timeout=_SCAN_GIT_TIMEOUT_SECONDS,
+                )
+            except subprocess.TimeoutExpired:
+                _warn(
+                    f"git status timed out after {_SCAN_GIT_TIMEOUT_SECONDS}s for {joined} - "
+                    "not filtering findings for these files"
+                )
+                return {path: None for path in group_file_paths}
+            except OSError as exc:
+                _warn(
+                    f"could not run git status for {joined} ({type(exc).__name__}) - "
+                    "not filtering findings for these files"
+                )
+                return {path: None for path in group_file_paths}
+            if status.returncode != 0:
+                _warn(
+                    f"git status failed for {joined} (exit {status.returncode}): "
+                    f"{status.stderr.strip()} - not filtering findings for these files"
+                )
+                return {path: None for path in group_file_paths}
+            untracked.update(_parse_porcelain_untracked(status.stdout, chunk))
 
-    result = {relpath_to_path[relpath]: None for relpath in untracked}
+    result = {path: None for relpath in untracked for path in relpath_to_paths[relpath]}
     tracked_relpaths = [relpath for relpath in relpaths if relpath not in untracked]
     if not tracked_relpaths:
         return result
@@ -1599,6 +1602,7 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths):
     failed_relpaths = set()
     added_by_relpath = {}
     for chunk in _chunked(tracked_relpaths, _PATHSPEC_CHUNK_SIZE):
+        joined = _joined_for_message(path for relpath in chunk for path in relpath_to_paths[relpath])
         try:
             diff = subprocess.run(
                 ["git", "--literal-pathspecs", "-C", toplevel, "-c", "core.quotePath=false", "diff", "-U0",
@@ -1629,19 +1633,20 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths):
         added_by_relpath.update(_parse_diff_added_lines(diff.stdout, set(chunk)))
 
     for relpath in tracked_relpaths:
-        path = relpath_to_path[relpath]
-        result[path] = None if relpath in failed_relpaths else added_by_relpath.get(relpath, set())
+        value = None if relpath in failed_relpaths else added_by_relpath.get(relpath, set())
+        for path in relpath_to_paths[relpath]:
+            result[path] = value
     return result
 
 
-def _added_line_numbers_map(base_ref, file_paths, repo_root=None):
+def _added_line_numbers_map(base_ref, file_paths, repo_root=None, files_are_tracked=False):
     if repo_root is not None:
-        return _added_line_numbers_for_toplevel(base_ref, repo_root, file_paths)
+        return _added_line_numbers_for_toplevel(base_ref, repo_root, file_paths, files_are_tracked=files_are_tracked)
 
     toplevel_by_dir = {}
     groups = {}
     for file_path in file_paths:
-        repo_dir = os.path.realpath(os.path.dirname(os.path.abspath(file_path))) or "."
+        repo_dir = os.path.realpath(os.path.dirname(os.path.abspath(file_path)))
         if repo_dir not in toplevel_by_dir:
             toplevel_by_dir[repo_dir] = _git_toplevel(repo_dir)
         groups.setdefault(toplevel_by_dir[repo_dir], []).append(file_path)
@@ -1651,7 +1656,9 @@ def _added_line_numbers_map(base_ref, file_paths, repo_root=None):
         if toplevel is None:
             result.update({path: None for path in group_file_paths})
             continue
-        result.update(_added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths))
+        result.update(
+            _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files_are_tracked=files_are_tracked)
+        )
     return result
 
 
@@ -1675,12 +1682,15 @@ _EXIT_BRIGHT_LINE = 3
 _EXIT_INTERNAL_ERROR = 4
 
 
-def _check_files(files, base=None, repo_root=None):
+def _check_files(files, base=None, repo_root=None, files_are_tracked=False):
     try:
         any_error = False
         any_blocking = False
         any_advisory = False
-        added_by_path = _added_line_numbers_map(base, files, repo_root=repo_root) if base else {}
+        added_by_path = (
+            _added_line_numbers_map(base, files, repo_root=repo_root, files_are_tracked=files_are_tracked)
+            if base else {}
+        )
         for file_path in files:
             try:
                 with open(file_path, encoding="utf-8") as handle:
@@ -1840,7 +1850,7 @@ def _scan_main():
     overall = _EXIT_CLEAN
     if tracked:
         base = "HEAD" if head_sha else None
-        overall = max(overall, _check_files(tracked, base=base, repo_root=repo_root))
+        overall = max(overall, _check_files(tracked, base=base, repo_root=repo_root, files_are_tracked=True))
     if untracked:
         overall = max(overall, _check_files(untracked))
     return overall
