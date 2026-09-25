@@ -712,13 +712,7 @@ def _csharp_find_block_comment_close(lines, li):
 
 
 def _csharp_is_only_comments(text):
-    rest = text.strip()
-    while rest.startswith("/*"):
-        close = rest.find("*/", 2)
-        if close == -1:
-            return True
-        rest = rest[close + 2:].lstrip()
-    return rest == "" or rest.startswith("//")
+    return _csharp_skip_comments([text], 0, text)[1] == ""
 
 
 def _csharp_skip_comments(lines, li, text):
@@ -748,8 +742,6 @@ def _csharp_consume_attribute_line(lines, li):
         attrs_text, remainder = group
         names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
         li, rest = _csharp_skip_comments(lines, li, remainder)
-        if rest == "":
-            return names, li, ""
         group = _csharp_line_attribute_group(rest)
         if group is None:
             return names, li, rest

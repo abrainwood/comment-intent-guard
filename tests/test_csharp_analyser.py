@@ -331,7 +331,7 @@ def test_doc_comment_before_an_attribute_with_a_block_comment_spanning_three_or_
     assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 6), (6, 6))]
 
 
-def test_skip_comments_after_a_later_line_close_followed_by_code_is_not_only_comments():
+def test_skip_comments_resumes_on_the_closing_line_with_the_code_after_the_close():
     lines = ["[Fact] /* a", "end */ public void ChecksTheThing()"]
 
     li, rest = guard._csharp_skip_comments(lines, 0, " /* a")
