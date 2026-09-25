@@ -1559,6 +1559,50 @@ def _resolved_path(path):
     return os.path.join(resolved_dir, os.path.basename(path))
 
 
+def _run_chunked_git_command(relpaths, relpath_to_paths, build_command, label, parse_chunk, container, exit_label=None):
+    """Run build_command over relpaths in _PATHSPEC_CHUNK_SIZE chunks.
+
+    On success, parse_chunk(stdout, chunk) is merged into container via
+    container.update(...) - container.update must accept whatever
+    parse_chunk returns (an iterable of relpaths for a set, a relpath ->
+    value mapping for a dict). A chunk that times out, raises OSError, or
+    exits non-zero is warned about and its relpaths added to the returned
+    failed set; later chunks still run.
+    """
+    exit_label = label if exit_label is None else exit_label
+    failed_relpaths = set()
+    for chunk in _chunked(relpaths, _PATHSPEC_CHUNK_SIZE):
+        joined = _joined_for_message(path for relpath in chunk for path in relpath_to_paths[relpath])
+        try:
+            result = subprocess.run(
+                build_command(chunk),
+                capture_output=True, text=True, timeout=_SCAN_GIT_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            _warn(
+                f"git {label} timed out after {_SCAN_GIT_TIMEOUT_SECONDS}s for {joined} - "
+                "not filtering findings for these files"
+            )
+            failed_relpaths.update(chunk)
+            continue
+        except OSError as exc:
+            _warn(
+                f"could not run git {label} for {joined} ({type(exc).__name__}) - "
+                "not filtering findings for these files"
+            )
+            failed_relpaths.update(chunk)
+            continue
+        if result.returncode != 0:
+            _warn(
+                f"git {exit_label} failed for {joined} (exit {result.returncode}): "
+                f"{result.stderr.strip()} - not filtering findings for these files"
+            )
+            failed_relpaths.update(chunk)
+            continue
+        container.update(parse_chunk(result.stdout, chunk))
+    return failed_relpaths
+
+
 def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files_are_tracked=False):
     relpath_to_paths = {}
     for path in group_file_paths:
@@ -1568,35 +1612,13 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files
     untracked = set()
     status_failed_relpaths = set()
     if not files_are_tracked:
-        for chunk in _chunked(relpaths, _PATHSPEC_CHUNK_SIZE):
-            joined = _joined_for_message(path for relpath in chunk for path in relpath_to_paths[relpath])
-            try:
-                status = subprocess.run(
-                    ["git", "--literal-pathspecs", "-C", toplevel, "status", "--porcelain", "-z", "--", *chunk],
-                    capture_output=True, text=True, timeout=_SCAN_GIT_TIMEOUT_SECONDS,
-                )
-            except subprocess.TimeoutExpired:
-                _warn(
-                    f"git status timed out after {_SCAN_GIT_TIMEOUT_SECONDS}s for {joined} - "
-                    "not filtering findings for these files"
-                )
-                status_failed_relpaths.update(chunk)
-                continue
-            except OSError as exc:
-                _warn(
-                    f"could not run git status for {joined} ({type(exc).__name__}) - "
-                    "not filtering findings for these files"
-                )
-                status_failed_relpaths.update(chunk)
-                continue
-            if status.returncode != 0:
-                _warn(
-                    f"git status failed for {joined} (exit {status.returncode}): "
-                    f"{status.stderr.strip()} - not filtering findings for these files"
-                )
-                status_failed_relpaths.update(chunk)
-                continue
-            untracked.update(_parse_porcelain_untracked(status.stdout, chunk))
+        status_failed_relpaths = _run_chunked_git_command(
+            relpaths, relpath_to_paths,
+            lambda chunk: [
+                "git", "--literal-pathspecs", "-C", toplevel, "status", "--porcelain", "-z", "--", *chunk
+            ],
+            "status", _parse_porcelain_untracked, untracked,
+        )
 
     result = {
         path: None for relpath in untracked | status_failed_relpaths for path in relpath_to_paths[relpath]
@@ -1607,38 +1629,16 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files
     if not tracked_relpaths:
         return result
 
-    failed_relpaths = set()
     added_by_relpath = {}
-    for chunk in _chunked(tracked_relpaths, _PATHSPEC_CHUNK_SIZE):
-        joined = _joined_for_message(path for relpath in chunk for path in relpath_to_paths[relpath])
-        try:
-            diff = subprocess.run(
-                ["git", "--literal-pathspecs", "-C", toplevel, "-c", "core.quotePath=false", "diff", "-U0",
-                 "--no-color", base_ref, "--", *chunk],
-                capture_output=True, text=True, timeout=_SCAN_GIT_TIMEOUT_SECONDS,
-            )
-        except subprocess.TimeoutExpired:
-            _warn(
-                f"git diff timed out after {_SCAN_GIT_TIMEOUT_SECONDS}s for {joined} - "
-                "not filtering findings for these files"
-            )
-            failed_relpaths.update(chunk)
-            continue
-        except OSError as exc:
-            _warn(
-                f"could not run git diff for {joined} ({type(exc).__name__}) - "
-                "not filtering findings for these files"
-            )
-            failed_relpaths.update(chunk)
-            continue
-        if diff.returncode != 0:
-            _warn(
-                f"git diff against {base_ref} failed for {joined} (exit {diff.returncode}): "
-                f"{diff.stderr.strip()} - not filtering findings for these files"
-            )
-            failed_relpaths.update(chunk)
-            continue
-        added_by_relpath.update(_parse_diff_added_lines(diff.stdout, set(chunk)))
+    failed_relpaths = _run_chunked_git_command(
+        tracked_relpaths, relpath_to_paths,
+        lambda chunk: [
+            "git", "--literal-pathspecs", "-C", toplevel, "-c", "core.quotePath=false", "diff", "-U0",
+            "--no-color", base_ref, "--", *chunk
+        ],
+        "diff", lambda stdout, chunk: _parse_diff_added_lines(stdout, set(chunk)), added_by_relpath,
+        exit_label=f"diff against {base_ref}",
+    )
 
     for relpath in tracked_relpaths:
         value = None if relpath in failed_relpaths else added_by_relpath.get(relpath, set())

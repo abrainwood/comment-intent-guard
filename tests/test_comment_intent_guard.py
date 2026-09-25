@@ -2020,7 +2020,7 @@ def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_diff_exi
         assert str(target) in stderr
 
 
-def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_exits_non_zero(tmp_path, capsys):
+def test_added_line_numbers_map_warns_and_degrades_every_file_in_a_single_chunk_group_when_status_exits_non_zero(tmp_path, capsys):
     _init_git_repo(tmp_path)
     filenames = ["a.py", "b.py"]
     targets = [tmp_path / name for name in filenames]
@@ -2045,7 +2045,7 @@ def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_e
     assert "exit 1" in stderr
 
 
-def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_raises_oserror(tmp_path, capsys):
+def test_added_line_numbers_map_warns_and_degrades_every_file_in_a_single_chunk_group_when_status_raises_oserror(tmp_path, capsys):
     _init_git_repo(tmp_path)
     filenames = ["a.py", "b.py"]
     targets = [tmp_path / name for name in filenames]
@@ -2068,6 +2068,8 @@ def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_r
     stderr = capsys.readouterr().err
     assert "git status" in stderr
     assert "OSError" in stderr
+    for target in targets:
+        assert str(target) in stderr
 
 
 def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_raises_oserror(tmp_path, capsys):
@@ -2221,27 +2223,55 @@ def test_added_line_numbers_map_warns_naming_only_the_failing_chunk_when_a_diff_
     assert "b.py" not in stderr
 
 
+def _exit_nonzero_status(args, real_run, **kwargs):
+    return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake status failure\n")
+
+
+def _timeout_status(args, real_run, **kwargs):
+    raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+
+def _oserror_status(args, real_run, **kwargs):
+    raise OSError("no such file or directory: git")
+
+
+@pytest.mark.parametrize(
+    "make_first_chunk_failure", [_exit_nonzero_status, _timeout_status, _oserror_status]
+)
 def test_added_line_numbers_map_keeps_checking_later_chunks_after_a_status_chunk_fails(
-    tmp_path, monkeypatch, capsys
+    tmp_path, monkeypatch, capsys, make_first_chunk_failure
 ):
-    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+    _init_git_repo(tmp_path)
+    a_target = tmp_path / "a.py"
+    c_target = tmp_path / "c.py"
+    a_target.write_text("x = 1\n")
+    c_target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py", "c.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    a_target.write_text("x = 1\ny = 2\n")
+    # b.py stays untracked (never `git add`-ed); see PR for why this shape
+    # of fixture (untracked file after a failing chunk, plus one more
+    # tracked file behind it) is required to catch the reviewed mutants.
+    b_target = tmp_path / "b.py"
+    b_target.write_text("x = 1\n")
+    c_target.write_text("x = 1\ny = 2\n")
 
     monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
     real_run = subprocess.run
 
-    def _fail_second_status_chunk(args, **kwargs):
-        if "status" in args and "b.py" in args:
-            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake status failure\n")
+    def _fail_first_status_chunk(args, **kwargs):
+        if "status" in args and "a.py" in args:
+            return make_first_chunk_failure(args, real_run, **kwargs)
         return real_run(args, **kwargs)
 
-    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_second_status_chunk):
-        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_status_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target), str(c_target)])
 
-    assert added[str(a_target)] == {2}
+    assert added[str(a_target)] is None
     assert added[str(b_target)] is None
+    assert added[str(c_target)] == {2}
     stderr = capsys.readouterr().err
-    assert str(b_target) in stderr
-    assert "a.py" not in stderr
+    assert str(a_target) in stderr
 
 
 def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_exits_non_zero(
