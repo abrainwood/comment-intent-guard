@@ -7,11 +7,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import comment_intent_guard as guard  # noqa: E402
-from comment_intent_guard import (  # noqa: E402,F401
-    _c_unquote_body,
-    _parse_diff_added_lines,
-    _unquote_git_header_path,
-)
+from comment_intent_guard import _parse_diff_added_lines  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import stamps as stamps_module  # noqa: E402

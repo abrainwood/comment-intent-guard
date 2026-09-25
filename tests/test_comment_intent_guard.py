@@ -1877,6 +1877,23 @@ def test_added_line_numbers_map_handles_a_tracked_file_with_a_space_in_its_name(
     assert added[str(spaced_file)] == {2}
 
 
+def test_added_line_numbers_map_handles_a_tracked_file_reached_through_a_symlinked_directory(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    target.write_text("x = 1\ny = 2\n")
+
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    path_via_link = str(link / "a.py")
+
+    added = guard._added_line_numbers_map("HEAD", [path_via_link])
+
+    assert added[path_via_link] == {2}
+
+
 def test_added_line_numbers_map_handles_a_tracked_file_with_a_non_ascii_name(tmp_path):
     _init_git_repo(tmp_path)
     cafe_file = tmp_path / "café.py"
@@ -2059,6 +2076,79 @@ def test_added_line_numbers_map_degrades_the_group_when_git_diff_raises_oserror(
     assert "OSError" in stderr
     for target in targets:
         assert str(target.name) in stderr
+
+
+def _init_two_tracked_files_repo(tmp_path):
+    _init_git_repo(tmp_path)
+    a_target = tmp_path / "a.py"
+    b_target = tmp_path / "b.py"
+    a_target.write_text("x = 1\n")
+    b_target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py", "b.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    a_target.write_text("x = 1\ny = 2\n")
+    b_target.write_text("x = 1\ny = 2\n")
+    return a_target, b_target
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_exits_non_zero(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake diff failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_raises_oserror(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_times_out(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
 
 
 def test_joined_for_message_lists_every_path_at_or_under_the_limit():
@@ -2983,3 +3073,39 @@ def test_the_two_allowlist_keys_are_independent_the_general_one_still_clears_doc
     violations = guard.find_blocking_violations(source, str(target))
 
     assert violations == []
+
+
+def test_unquote_git_header_path_handles_mixed_raw_and_octal_escapes_from_quote_path_false():
+    raw = '"b/a\\"☃.py"'
+
+    assert guard._unquote_git_header_path(raw) == 'b/a"☃.py'
+
+
+def test_unquote_git_header_path_handles_a_fully_octal_quoted_path():
+    raw = '"b/a\\"\\342\\230\\203.py"'
+
+    assert guard._unquote_git_header_path(raw) == 'b/a"☃.py'
+
+
+def test_unquote_git_header_path_strips_only_a_trailing_tab_not_a_leading_one():
+    raw = "\tb/a\tb.py\t"
+
+    assert guard._unquote_git_header_path(raw) == "\tb/a\tb.py"
+
+
+def test_unquote_git_header_path_falls_back_to_the_raw_quoted_string_when_not_valid_utf8():
+    raw = '"b/a\\377.py"'
+
+    assert guard._unquote_git_header_path(raw) == raw
+
+
+def test_c_unquote_body_treats_a_trailing_lone_backslash_as_a_literal_character():
+    assert guard._c_unquote_body("a\\") == b"a\\"
+
+
+def test_c_unquote_body_keeps_an_unrecognized_escape_as_backslash_and_char():
+    assert guard._c_unquote_body("a\\zb") == b"a\\zb"
+
+
+def test_c_unquote_body_stops_an_octal_escape_at_three_digits():
+    assert guard._c_unquote_body("\\1234") == bytes([0o123]) + b"4"

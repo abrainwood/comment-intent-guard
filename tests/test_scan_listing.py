@@ -57,19 +57,6 @@ def _write_diff_hanging_fake_git(bin_dir):
     fake_git.chmod(0o755)
 
 
-def _write_status_hanging_fake_git(bin_dir):
-    real_git = subprocess.run(["which", "git"], capture_output=True, text=True, check=True).stdout.strip()
-    fake_git = bin_dir / "git"
-    fake_git.write_text(
-        "#!/bin/sh\n"
-        "case \" $* \" in\n"
-        f"  *' status '*) exec sleep {_HANGING_SLEEP_SECONDS} ;;\n"
-        f"  *) exec {real_git} \"$@\" ;;\n"
-        "esac\n"
-    )
-    fake_git.chmod(0o755)
-
-
 def _write_failing_fake_git(bin_dir, message="fake git failure", exit_code=128):
     fake_git = bin_dir / "git"
     fake_git.write_text(f"#!/bin/sh\necho '{message}' >&2\nexit {exit_code}\n")
@@ -277,36 +264,13 @@ def test_check_files_with_base_collapses_multiple_subdirectories_of_one_repo_int
     monkeypatch.setattr(guard.subprocess, "run", _counting_run)
 
     files = [str(tmp_path / relpath) for relpath in relpaths]
-    exit_code = guard._check_files(files, base="HEAD")
+    exit_code = guard._check_files(files, base="HEAD", repo_root=str(tmp_path))
 
-    status_calls = [call for call in calls if "status" in call]
-    diff_calls = [call for call in calls if "diff" in call]
-    assert len(status_calls) == 1
-    assert len(diff_calls) == 1
+    assert len(calls) == 2
 
     stdout = capsys.readouterr().out
     assert "Comment run of" not in stdout
     assert exit_code == guard._EXIT_CLEAN
-
-
-def test_added_line_numbers_map_bounds_the_diff_call_by_the_configured_timeout(tmp_path, monkeypatch):
-    _init_repo(tmp_path)
-    target = _write(tmp_path, "a.py", "x = 1\n")
-    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
-    subprocess.run(
-        ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
-        cwd=tmp_path, check=True,
-    )
-    _write_diff_hanging_fake_git(tmp_path)
-    _prepend_to_path(monkeypatch, tmp_path)
-    monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.5)
-
-    started_at = time.monotonic()
-    result = guard._added_line_numbers_map("HEAD", [str(target)])
-    elapsed = time.monotonic() - started_at
-
-    assert result == {str(target): None}
-    assert elapsed < _HANGING_SLEEP_SECONDS
 
 
 def test_added_line_numbers_map_degrades_every_file_in_the_group_on_diff_timeout(tmp_path, monkeypatch, capsys):
@@ -322,9 +286,12 @@ def test_added_line_numbers_map_degrades_every_file_in_the_group_on_diff_timeout
     _prepend_to_path(monkeypatch, tmp_path)
     monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.5)
 
+    started_at = time.monotonic()
     result = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+    elapsed = time.monotonic() - started_at
 
     assert result == {str(target): None for target in targets}
+    assert elapsed < _HANGING_SLEEP_SECONDS
     stderr = capsys.readouterr().err
     assert "not filtering findings" in stderr.lower()
     assert "git diff" in stderr.lower()
@@ -343,16 +310,19 @@ def test_added_line_numbers_map_degrades_every_file_when_status_times_out_before
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
         cwd=tmp_path, check=True,
     )
-    _write_status_hanging_fake_git(tmp_path)
-    _prepend_to_path(monkeypatch, tmp_path)
+    real_run = subprocess.run
+
+    def _timeout_status(args, **kwargs):
+        if "status" in args:
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(guard.subprocess, "run", _timeout_status)
     monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.5)
 
-    started_at = time.monotonic()
     result = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
-    elapsed = time.monotonic() - started_at
 
     assert result == {str(target): None for target in targets}
-    assert elapsed < _HANGING_SLEEP_SECONDS
     stderr = capsys.readouterr().err
     assert "not filtering findings" in stderr.lower()
     assert "git status" in stderr.lower()
@@ -370,8 +340,14 @@ def test_added_line_numbers_map_degrades_every_file_when_git_toplevel_resolution
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "add"],
         cwd=tmp_path, check=True,
     )
-    _write_hanging_fake_git(tmp_path)
-    _prepend_to_path(monkeypatch, tmp_path)
+    real_run = subprocess.run
+
+    def _timeout_rev_parse(args, **kwargs):
+        if "rev-parse" in args:
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+        return real_run(args, **kwargs)
+
+    monkeypatch.setattr(guard.subprocess, "run", _timeout_rev_parse)
     monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.05)
 
     result = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])

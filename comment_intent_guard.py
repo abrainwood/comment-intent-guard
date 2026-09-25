@@ -1543,7 +1543,7 @@ def _git_toplevel(repo_dir):
 
 
 def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths):
-    relpath_to_path = {os.path.relpath(os.path.abspath(path), toplevel): path for path in group_file_paths}
+    relpath_to_path = {os.path.relpath(os.path.realpath(path), toplevel): path for path in group_file_paths}
     relpaths = list(relpath_to_path)
     joined = _joined_for_message(group_file_paths)
 
@@ -1617,11 +1617,14 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths):
     return result
 
 
-def _added_line_numbers_map(base_ref, file_paths):
+def _added_line_numbers_map(base_ref, file_paths, repo_root=None):
+    if repo_root is not None:
+        return _added_line_numbers_for_toplevel(base_ref, repo_root, file_paths)
+
     toplevel_by_dir = {}
     groups = {}
     for file_path in file_paths:
-        repo_dir = os.path.dirname(os.path.abspath(file_path)) or "."
+        repo_dir = os.path.dirname(os.path.realpath(file_path)) or "."
         if repo_dir not in toplevel_by_dir:
             toplevel_by_dir[repo_dir] = _git_toplevel(repo_dir)
         groups.setdefault(toplevel_by_dir[repo_dir], []).append(file_path)
@@ -1655,12 +1658,12 @@ _EXIT_BRIGHT_LINE = 3
 _EXIT_INTERNAL_ERROR = 4
 
 
-def _check_files(files, base=None):
+def _check_files(files, base=None, repo_root=None):
     try:
         any_error = False
         any_blocking = False
         any_advisory = False
-        added_by_path = _added_line_numbers_map(base, files) if base else {}
+        added_by_path = _added_line_numbers_map(base, files, repo_root=repo_root) if base else {}
         for file_path in files:
             try:
                 with open(file_path, encoding="utf-8") as handle:
@@ -1820,7 +1823,7 @@ def _scan_main():
     overall = _EXIT_CLEAN
     if tracked:
         base = "HEAD" if head_sha else None
-        overall = max(overall, _check_files(tracked, base=base))
+        overall = max(overall, _check_files(tracked, base=base, repo_root=repo_root))
     if untracked:
         overall = max(overall, _check_files(untracked))
     return overall
