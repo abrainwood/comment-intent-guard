@@ -53,6 +53,7 @@ def gate_test_repo_template(tmp_path_factory):
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=template, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=template, check=True)
     subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=template, check=True)
+    subprocess.run(["git", "config", "maintenance.auto", "false"], cwd=template, check=True)
     (template / "base.py").write_text("x = 1\n")
     subprocess.run(["git", "add", "."], cwd=template, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=template, check=True)
