@@ -196,6 +196,36 @@ def test_doc_comment_with_a_stray_triple_slash_line_before_the_signature_is_bloc
     assert violations == [(_csharp_test_doc_violation("T", 5), (5, 5))]
 
 
+def test_doc_comment_before_an_attribute_with_an_unterminated_comment_closing_on_a_later_line_is_blocked():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* oops real code\n"
+        "some other stray text */\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))]
+
+
+def test_doc_comment_before_a_block_comment_spanning_two_attribute_lines_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] /* start\n"
+        'end */ [Trait("x", "y")]\n'
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 4), (4, 4))]
+
+
 def test_doc_comment_before_a_fully_qualified_attribute_is_blocked():
     text = (
         "/// <summary>Checks the thing.</summary>\n"
@@ -1241,4 +1271,4 @@ def test_same_named_documented_test_methods_in_different_classes_are_each_blocke
     ],
 )
 def test_attribute_remainder_that_is_only_comments_is_ignored(text, expected):
-    assert guard._csharp_is_only_comments(text) == expected
+    assert guard._csharp_is_only_comments([text], 0, text) == expected

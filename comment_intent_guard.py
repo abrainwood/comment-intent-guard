@@ -701,14 +701,49 @@ def _csharp_line_attribute_group(line):
     return (line[start:match_end], line[match_end:])
 
 
-def _csharp_is_only_comments(text):
+def _csharp_find_block_comment_close(lines, li):
+    li += 1
+    while li < len(lines):
+        idx = lines[li].find("*/")
+        if idx != -1:
+            return li, lines[li][idx + 2:]
+        li += 1
+    return None
+
+
+def _csharp_is_only_comments(lines, li, text):
     rest = text.strip()
     while rest.startswith("/*"):
         close = rest.find("*/", 2)
         if close == -1:
-            return True
+            found = _csharp_find_block_comment_close(lines, li)
+            if found is None:
+                return True
+            li, after = found
+            rest = after.strip()
+            continue
         rest = rest[close + 2:].lstrip()
     return rest == "" or rest.startswith("//")
+
+
+def _csharp_consume_attribute_line(lines, li):
+    group = _csharp_line_attribute_group(lines[li])
+    if group is None:
+        return None
+    names = []
+    while True:
+        attrs_text, remainder = group
+        names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
+        rest = remainder.strip()
+        if rest.startswith("/*") and rest.find("*/", 2) == -1:
+            found = _csharp_find_block_comment_close(lines, li)
+            if found is None:
+                return names, li, True
+            li, remainder = found
+            group = _csharp_line_attribute_group(remainder)
+            if group is not None:
+                continue
+        return names, li, _csharp_is_only_comments(lines, li, remainder)
 
 
 def _csharp_walk_past_attribute_lines(lines, start_li):
@@ -718,14 +753,15 @@ def _csharp_walk_past_attribute_lines(lines, start_li):
         if not lines[li].strip() or lines[li].strip().startswith("///"):
             li += 1
             continue
-        group = _csharp_line_attribute_group(lines[li])
-        if group is None:
+        consumed = _csharp_consume_attribute_line(lines, li)
+        if consumed is None:
             break
-        attrs_text, remainder = group
-        attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
-        if not _csharp_is_only_comments(remainder):
+        names, resolved_li, only_comments = consumed
+        attribute_names.extend(names)
+        if not only_comments:
+            li = resolved_li
             break
-        li += 1
+        li = resolved_li + 1
     return li, attribute_names
 
 
@@ -755,7 +791,7 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
     if group is None:
         return False
     attrs_text, remainder = group
-    if not _csharp_is_only_comments(remainder):
+    if not _csharp_is_only_comments(lines, li, remainder):
         return False
     names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
     return any(_is_csharp_test_attribute(n) for n in names)
