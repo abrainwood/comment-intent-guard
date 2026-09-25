@@ -2,6 +2,7 @@ import ast
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tokenize
@@ -1892,6 +1893,25 @@ def test_added_line_numbers_map_handles_a_tracked_file_reached_through_a_symlink
     added = guard._added_line_numbers_map("HEAD", [path_via_link])
 
     assert added[path_via_link] == {2}
+
+
+def test_added_line_numbers_map_does_not_let_a_symlink_pointing_outside_the_repo_break_its_group(tmp_path):
+    _init_git_repo(tmp_path)
+    a_target = tmp_path / "a.yaml"
+    a_target.write_text("x: 1\n")
+    outside_dir = tmp_path.parent / "outside"
+    outside_dir.mkdir(exist_ok=True)
+    outside_file = outside_dir / "x.yaml"
+    outside_file.write_text("y: 1\n")
+    ext_link = tmp_path / "ext.yaml"
+    ext_link.symlink_to(os.path.relpath(outside_file, tmp_path))
+    subprocess.run(["git", "add", "a.yaml", "ext.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    a_target.write_text("x: 1\ny: 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(a_target), str(ext_link)], repo_root=str(tmp_path))
+
+    assert added[str(a_target)] == {2}
 
 
 def test_added_line_numbers_map_handles_a_tracked_file_with_a_non_ascii_name(tmp_path):

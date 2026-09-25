@@ -1542,8 +1542,13 @@ def _git_toplevel(repo_dir):
     return result.stdout.strip()
 
 
+def _resolved_path(path):
+    resolved_dir = os.path.realpath(os.path.dirname(os.path.abspath(path)))
+    return os.path.join(resolved_dir, os.path.basename(path))
+
+
 def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths):
-    relpath_to_path = {os.path.relpath(os.path.realpath(path), toplevel): path for path in group_file_paths}
+    relpath_to_path = {os.path.relpath(_resolved_path(path), toplevel): path for path in group_file_paths}
     relpaths = list(relpath_to_path)
     joined = _joined_for_message(group_file_paths)
 
@@ -1624,7 +1629,7 @@ def _added_line_numbers_map(base_ref, file_paths, repo_root=None):
     toplevel_by_dir = {}
     groups = {}
     for file_path in file_paths:
-        repo_dir = os.path.dirname(os.path.realpath(file_path)) or "."
+        repo_dir = os.path.realpath(os.path.dirname(os.path.abspath(file_path))) or "."
         if repo_dir not in toplevel_by_dir:
             toplevel_by_dir[repo_dir] = _git_toplevel(repo_dir)
         groups.setdefault(toplevel_by_dir[repo_dir], []).append(file_path)

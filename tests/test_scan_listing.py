@@ -267,6 +267,10 @@ def test_check_files_with_base_collapses_multiple_subdirectories_of_one_repo_int
     exit_code = guard._check_files(files, base="HEAD", repo_root=str(tmp_path))
 
     assert len(calls) == 2
+    status_calls = [call for call in calls if "status" in call]
+    diff_calls = [call for call in calls if "diff" in call]
+    assert len(status_calls) == 1
+    assert len(diff_calls) == 1
 
     stdout = capsys.readouterr().out
     assert "Comment run of" not in stdout
