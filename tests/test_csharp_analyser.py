@@ -487,6 +487,90 @@ def test_doc_comment_before_a_same_line_attribute_does_not_misattribute_the_body
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert not any("Equal" in message for message, _ in violations)
+
+
+def test_attribute_with_a_block_comment_before_a_doc_comment_is_recognised_as_a_test_attribute():
+    text = (
+        '[Fact] /* a */ [Trait("x", "y")]\n'
+        "/// <summary>Checks the thing.</summary>\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_block_comment_between_two_attributes_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        '[Fact] /* a */ [Trait("x", "y")]\n'
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_single_attribute_with_a_trailing_line_comment_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        "[Fact] // trailing\n"
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_block_comment_between_attributes_with_a_trailing_line_comment_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        '[Fact] /* a */ [Trait("x", "y")] // trailing\n'
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
+
+
+def test_doc_comment_before_two_chained_block_comments_between_attributes_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        '[Fact] /* a */ /* b */ [Trait("x", "y")]\n'
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
+
+
+def test_doc_comment_before_three_attributes_separated_by_two_block_comments_names_the_method():
+    text = (
+        "/// <summary>Checks the thing.</summary>\n"
+        '[Fact] /* a */ [Trait("x", "y")] /* b */ [Category("c")]\n'
+        "public void ChecksTheThing()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
     assert any("ChecksTheThing" in message for message, _ in violations)
 
 

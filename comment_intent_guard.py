@@ -677,30 +677,6 @@ def _csharp_skip_attribute_bracket_group(line, i):
     return None
 
 
-def _csharp_line_attribute_group(line):
-    n = len(line)
-    start = 0
-    while start < n and line[start] in " \t":
-        start += 1
-    match_end = None
-    pos = start
-    while True:
-        skip = pos
-        while skip < n and line[skip] in " \t":
-            skip += 1
-        end = _csharp_skip_attribute_bracket_group(line, skip)
-        if end is None:
-            break
-        trail = end
-        while trail < n and line[trail] in " \t":
-            trail += 1
-        match_end = trail
-        pos = trail
-    if match_end is None:
-        return None
-    return (line[start:match_end], line[match_end:])
-
-
 def _csharp_find_block_comment_close(lines, li):
     li += 1
     while li < len(lines):
@@ -733,18 +709,31 @@ def _csharp_skip_comments(lines, li, text):
         rest = after.strip()
 
 
+def _csharp_line_attribute_group(lines, li, line):
+    n = len(line)
+    start = 0
+    while start < n and line[start] in " \t":
+        start += 1
+    groups = []
+    tail = line[start:]
+    while True:
+        end = _csharp_skip_attribute_bracket_group(tail, 0)
+        if end is None:
+            break
+        groups.append(tail[:end])
+        li, tail = _csharp_skip_comments(lines, li, tail[end:])
+    if not groups:
+        return None
+    return (" ".join(groups), li, tail)
+
+
 def _csharp_consume_attribute_line(lines, li):
-    group = _csharp_line_attribute_group(lines[li])
+    group = _csharp_line_attribute_group(lines, li, lines[li])
     if group is None:
         return None
-    names = []
-    while True:
-        attrs_text, remainder = group
-        names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
-        li, rest = _csharp_skip_comments(lines, li, remainder)
-        group = _csharp_line_attribute_group(rest)
-        if group is None:
-            return names, li, rest
+    attrs_text, li, rest = group
+    names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
+    return names, li, rest
 
 
 def _csharp_walk_past_attribute_lines(lines, start_li):
@@ -785,11 +774,11 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
         li -= 1
     if li < 0:
         return False
-    group = _csharp_line_attribute_group(lines[li])
+    group = _csharp_line_attribute_group(lines, li, lines[li])
     if group is None:
         return False
-    attrs_text, remainder = group
-    if not _csharp_is_only_comments(remainder):
+    attrs_text, _, remainder = group
+    if remainder != "":
         return False
     names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
     return any(_is_csharp_test_attribute(n) for n in names)
