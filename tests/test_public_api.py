@@ -144,61 +144,59 @@ def test_finding_producing_function_returns_well_shaped_findings(build_findings)
     assert shapes == [(True, True, True)] * len(findings)
 
 
-def test_docstring_finding_span_tracks_where_the_docstring_actually_sits():
+@pytest.mark.parametrize("leading_lines", [0, 5])
+def test_docstring_finding_span_tracks_where_the_docstring_actually_sits(leading_lines):
     body_line_count = guard.DOCSTRING_LINE_THRESHOLD + 1
     prose = "\n".join(f"    reason {i}" for i in range(body_line_count))
+    prefix = "x = 1\n" * leading_lines
+    text = f'{prefix}"""\n{prose}\n"""\n'
 
-    for leading_lines in (0, 5):
-        prefix = "x = 1\n" * leading_lines
-        text = f'{prefix}"""\n{prose}\n"""\n'
+    findings = guard.find_misplaced_rationale(text)
 
-        findings = guard.find_misplaced_rationale(text)
-
-        _, span = next(f for f in findings if f[0].startswith("Docstring spans"))
-        start, end = span
-        assert start <= end
-        assert span == (1 + leading_lines, body_line_count + 2 + leading_lines)
+    _, span = next(f for f in findings if f[0].startswith("Docstring spans"))
+    start, end = span
+    assert start <= end
+    assert span == (1 + leading_lines, body_line_count + 2 + leading_lines)
 
 
-def test_yaml_comment_run_span_tracks_where_the_run_actually_sits():
+@pytest.mark.parametrize("leading_lines", [0, 5])
+def test_yaml_comment_run_span_tracks_where_the_run_actually_sits(leading_lines):
     run_len = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
     run_lines = "\n".join(f"# reason {i}" for i in range(run_len))
+    prefix = "key0: value\n" * leading_lines
+    text = f"{prefix}{run_lines}\nkey: value\n"
 
-    for leading_lines in (0, 5):
-        prefix = "key0: value\n" * leading_lines
-        text = f"{prefix}{run_lines}\nkey: value\n"
+    findings = guard.find_yaml_findings(text)
 
-        findings = guard.find_yaml_findings(text)
-
-        _, span = next(f for f in findings if f[0].startswith("Comment run"))
-        start, end = span
-        assert start <= end
-        assert span == (1 + leading_lines, run_len + leading_lines)
+    _, span = next(f for f in findings if f[0].startswith("Comment run"))
+    start, end = span
+    assert start <= end
+    assert span == (1 + leading_lines, run_len + leading_lines)
 
 
-def test_blocking_violation_span_tracks_where_the_flagged_docstring_actually_sits():
-    for leading_lines in (0, 5):
-        prefix = "x = 1\n" * leading_lines
-        text = f'{prefix}"""MG-1 golden case\nsecond line\nthird line\n"""\nVALUE = 1\n'
+@pytest.mark.parametrize("leading_lines", [0, 5])
+def test_blocking_violation_span_tracks_where_the_flagged_docstring_actually_sits(leading_lines):
+    prefix = "x = 1\n" * leading_lines
+    text = f'{prefix}"""MG-1 golden case\nsecond line\nthird line\n"""\nVALUE = 1\n'
 
-        violations = guard.find_blocking_violations(text, "/repo/tests/test_gap.py")
+    violations = guard.find_blocking_violations(text, "/repo/tests/test_gap.py")
 
-        _, span = next(v for v in violations if "MG-1" in v[0])
-        start, end = span
-        assert start <= end
-        assert span == (1 + leading_lines, 4 + leading_lines)
-
-
-def test_declared_constants_have_the_declared_type():
-    for name, expected_type in PUBLIC_CONSTANTS.items():
-        actual = getattr(guard, name)
-        assert type(actual) is expected_type, f"{name} is {type(actual).__name__}, declared as {expected_type.__name__}"
+    _, span = next(v for v in violations if "MG-1" in v[0])
+    start, end = span
+    assert start <= end
+    assert span == (1 + leading_lines, 4 + leading_lines)
 
 
-def test_declared_exceptions_exist_and_derive_from_the_declared_base():
-    for name, base in PUBLIC_EXCEPTIONS.items():
-        assert hasattr(guard, name), f"declared public exception {name!r} is missing from the module"
-        assert issubclass(getattr(guard, name), base)
+@pytest.mark.parametrize("name, expected_type", list(PUBLIC_CONSTANTS.items()), ids=list(PUBLIC_CONSTANTS))
+def test_declared_constants_have_the_declared_type(name, expected_type):
+    actual = getattr(guard, name)
+    assert type(actual) is expected_type, f"{name} is {type(actual).__name__}, declared as {expected_type.__name__}"
+
+
+@pytest.mark.parametrize("name, base", list(PUBLIC_EXCEPTIONS.items()), ids=list(PUBLIC_EXCEPTIONS))
+def test_declared_exceptions_exist_and_derive_from_the_declared_base(name, base):
+    assert hasattr(guard, name), f"declared public exception {name!r} is missing from the module"
+    assert issubclass(getattr(guard, name), base)
 
 
 def _run_cli(args):
