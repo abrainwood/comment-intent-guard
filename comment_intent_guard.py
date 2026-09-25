@@ -701,9 +701,19 @@ def _csharp_line_attribute_group(line):
     return (line[start:match_end], line[match_end:])
 
 
-def _csharp_test_method_after_doc_block(lines, end_li):
-    li = end_li + 1
-    saw_test_attribute = False
+def _csharp_is_only_comments(text):
+    rest = text.strip()
+    while rest.startswith("/*"):
+        close = rest.find("*/", 2)
+        if close == -1:
+            return True
+        rest = rest[close + 2:].lstrip()
+    return rest == "" or rest.startswith("//")
+
+
+def _csharp_walk_past_attribute_lines(lines, start_li):
+    li = start_li
+    attribute_names = []
     while li < len(lines):
         if not lines[li].strip() or lines[li].strip().startswith("///"):
             li += 1
@@ -712,17 +722,27 @@ def _csharp_test_method_after_doc_block(lines, end_li):
         if group is None:
             break
         attrs_text, remainder = group
-        names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
-        saw_test_attribute = saw_test_attribute or any(_is_csharp_test_attribute(n) for n in names)
-        if remainder.strip():
+        attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
+        if not _csharp_is_only_comments(remainder):
             break
         li += 1
-    if not saw_test_attribute or li >= len(lines):
-        return None
+    return li, attribute_names
+
+
+def _csharp_method_signature_after_attribute_lines(lines, start_li):
+    li, attribute_names = _csharp_walk_past_attribute_lines(lines, start_li)
+    if li >= len(lines):
+        return None, attribute_names
     group = _csharp_line_attribute_group(lines[li])
     search_text = group[1] if group is not None else lines[li]
     match = _CSHARP_METHOD_NAME_RE.search(search_text)
-    return (match.group(1), li + 1) if match else None
+    return ((match.group(1), li + 1) if match else None), attribute_names
+
+
+def _csharp_test_method_after_doc_block(lines, end_li):
+    found, attribute_names = _csharp_method_signature_after_attribute_lines(lines, end_li + 1)
+    saw_test_attribute = any(_is_csharp_test_attribute(n) for n in attribute_names)
+    return found if saw_test_attribute else None
 
 
 def _csharp_test_attribute_before_doc_block(lines, start_li):
@@ -735,31 +755,23 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
     if group is None:
         return False
     attrs_text, remainder = group
-    if remainder.strip():
+    if not _csharp_is_only_comments(remainder):
         return False
     names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
     return any(_is_csharp_test_attribute(n) for n in names)
 
 
-def _csharp_method_signature_immediately_after_doc_block(lines, end_li):
-    li = end_li + 1
-    while li < len(lines) and not lines[li].strip():
-        li += 1
-    if li >= len(lines):
-        return None
-    match = _CSHARP_METHOD_NAME_RE.search(lines[li])
-    return (match.group(1), li + 1) if match else None
-
-
 def _csharp_test_doc_blocking_violations(spans, lines):
     violations = []
+    seen_rows = set()
     for kind, start_li, end_li, _content in spans:
         if kind != "doc":
             continue
         found = _csharp_test_method_after_doc_block(lines, end_li)
         if found is None and _csharp_test_attribute_before_doc_block(lines, start_li):
-            found = _csharp_method_signature_immediately_after_doc_block(lines, end_li)
-        if found is not None:
+            found, _attribute_names = _csharp_method_signature_after_attribute_lines(lines, end_li + 1)
+        if found is not None and found[1] not in seen_rows:
+            seen_rows.add(found[1])
             name, row = found
             violation = _test_docstring_violation(name, row, "an XML doc comment", "XML doc comment")
             violations.append((violation, (row, row)))
