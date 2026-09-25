@@ -346,7 +346,9 @@ def test_added_line_numbers_map_degrades_every_file_when_status_times_out_before
     monkeypatch.setattr(guard.subprocess, "run", _timeout_status)
     monkeypatch.setattr(guard, "_SCAN_GIT_TIMEOUT_SECONDS", 0.5)
 
-    result = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+    result = guard._added_line_numbers_map(
+        "HEAD", [str(target) for target in targets], repo_root=str(git_repo)
+    )
 
     assert result == {str(target): None for target in targets}
     stderr = capsys.readouterr().err

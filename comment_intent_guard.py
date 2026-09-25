@@ -1566,6 +1566,7 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files
     relpaths = list(relpath_to_paths)
 
     untracked = set()
+    status_failed_relpaths = set()
     if not files_are_tracked:
         for chunk in _chunked(relpaths, _PATHSPEC_CHUNK_SIZE):
             joined = _joined_for_message(path for relpath in chunk for path in relpath_to_paths[relpath])
@@ -1579,23 +1580,30 @@ def _added_line_numbers_for_toplevel(base_ref, toplevel, group_file_paths, files
                     f"git status timed out after {_SCAN_GIT_TIMEOUT_SECONDS}s for {joined} - "
                     "not filtering findings for these files"
                 )
-                return {path: None for path in group_file_paths}
+                status_failed_relpaths.update(chunk)
+                continue
             except OSError as exc:
                 _warn(
                     f"could not run git status for {joined} ({type(exc).__name__}) - "
                     "not filtering findings for these files"
                 )
-                return {path: None for path in group_file_paths}
+                status_failed_relpaths.update(chunk)
+                continue
             if status.returncode != 0:
                 _warn(
                     f"git status failed for {joined} (exit {status.returncode}): "
                     f"{status.stderr.strip()} - not filtering findings for these files"
                 )
-                return {path: None for path in group_file_paths}
+                status_failed_relpaths.update(chunk)
+                continue
             untracked.update(_parse_porcelain_untracked(status.stdout, chunk))
 
-    result = {path: None for relpath in untracked for path in relpath_to_paths[relpath]}
-    tracked_relpaths = [relpath for relpath in relpaths if relpath not in untracked]
+    result = {
+        path: None for relpath in untracked | status_failed_relpaths for path in relpath_to_paths[relpath]
+    }
+    tracked_relpaths = [
+        relpath for relpath in relpaths if relpath not in untracked and relpath not in status_failed_relpaths
+    ]
     if not tracked_relpaths:
         return result
 

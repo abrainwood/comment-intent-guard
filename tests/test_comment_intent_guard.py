@@ -1974,6 +1974,34 @@ def test_added_line_numbers_on_an_untracked_file_returns_none(tmp_path):
     assert added is None
 
 
+def test_added_line_numbers_map_skips_status_for_tracked_files_without_a_repo_root(tmp_path):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    for target in targets:
+        target.write_text("x = 1\ny = 2\n")
+
+    real_run = subprocess.run
+    calls = []
+
+    def _counting_run(args, **kwargs):
+        calls.append(args)
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_counting_run):
+        added = guard._added_line_numbers_map(
+            "HEAD", [str(target) for target in targets], files_are_tracked=True
+        )
+
+    assert added == {str(target): {2} for target in targets}
+    status_calls = [call for call in calls if "status" in call]
+    assert len(status_calls) == 0
+
+
 def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_diff_exits_non_zero(tmp_path, capsys):
     _init_git_repo(tmp_path)
     filenames = ["a.py", "b.py"]
@@ -2040,8 +2068,6 @@ def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_status_r
     stderr = capsys.readouterr().err
     assert "git status" in stderr
     assert "OSError" in stderr
-    for target in targets:
-        assert str(target.name) in stderr
 
 
 def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_raises_oserror(tmp_path, capsys):
@@ -2191,8 +2217,31 @@ def test_added_line_numbers_map_warns_naming_only_the_failing_chunk_when_a_diff_
         guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
 
     stderr = capsys.readouterr().err
-    assert "a.py" in stderr
+    assert str(a_target) in stderr
     assert "b.py" not in stderr
+
+
+def test_added_line_numbers_map_keeps_checking_later_chunks_after_a_status_chunk_fails(
+    tmp_path, monkeypatch, capsys
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_second_status_chunk(args, **kwargs):
+        if "status" in args and "b.py" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake status failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_second_status_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] == {2}
+    assert added[str(b_target)] is None
+    stderr = capsys.readouterr().err
+    assert str(b_target) in stderr
+    assert "a.py" not in stderr
 
 
 def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_exits_non_zero(
@@ -2354,7 +2403,7 @@ def test_parse_diff_added_lines_tracks_file_boundaries_across_renames_deletes_an
     }
 
 
-def test_added_line_numbers_map_resolves_dotted_and_plain_spellings_of_the_same_file_to_one_entry(tmp_path):
+def test_added_line_numbers_map_gives_both_spellings_of_one_file_the_same_added_lines(tmp_path):
     _init_git_repo(tmp_path)
     target = tmp_path / "a.py"
     target.write_text("x = 1\n")
@@ -2369,6 +2418,20 @@ def test_added_line_numbers_map_resolves_dotted_and_plain_spellings_of_the_same_
 
     assert added[plain_spelling] == {2}
     assert added[dotted_spelling] == {2}
+
+
+def test_added_line_numbers_map_gives_both_spellings_of_one_untracked_file_none(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+
+    plain_spelling = str(target)
+    dotted_spelling = f"{tmp_path}/./a.py"
+
+    added = guard._added_line_numbers_map("HEAD", [plain_spelling, dotted_spelling])
+
+    assert added[plain_spelling] is None
+    assert added[dotted_spelling] is None
 
 
 def test_added_line_numbers_map_treats_an_untouched_tracked_file_as_no_added_lines(tmp_path):

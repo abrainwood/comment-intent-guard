@@ -19,11 +19,6 @@ def _load_module():
 guard = _load_module()
 
 
-def _init_repo_with_a_commit(repo_dir):
-    subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
-    _commit_a_file(repo_dir)
-
-
 def _commit_a_file(repo_dir):
     (repo_dir / "committed.py").write_text("def add(a, b):\n    return a + b\n")
     subprocess.run(["git", "add", "committed.py"], cwd=repo_dir, check=True)
@@ -66,10 +61,9 @@ def test_scan_reports_an_untracked_violating_python_file_and_exits_3(git_repo, m
 
 
 def test_scan_does_not_flag_a_pre_existing_advisory_touched_only_by_a_clean_append(
-    tmp_path, monkeypatch, capsys
+    git_repo, monkeypatch, capsys
 ):
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    config = tmp_path / "config.yaml"
+    config = git_repo / "config.yaml"
     config.write_text(
         "# first reason for this shape\n"
         "# second reason for this shape\n"
@@ -78,13 +72,13 @@ def test_scan_does_not_flag_a_pre_existing_advisory_touched_only_by_a_clean_appe
         "# fifth reason for this shape\n"
         "key: value\n"
     )
-    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "config.yaml"], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "init"],
-        cwd=tmp_path,
+        cwd=git_repo,
         check=True,
     )
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(git_repo)
     pre_append_exit_code = guard._cli_main(["--all", "config.yaml"])
     capsys.readouterr()
     assert pre_append_exit_code == guard._EXIT_ADVISORY
@@ -118,21 +112,20 @@ def test_scan_ignores_a_deleted_tracked_file_but_still_reports_an_untracked_viol
 
 
 def test_scan_reports_a_violation_nested_in_a_subdirectory_alongside_a_top_level_match(
-    tmp_path, monkeypatch, capsys
+    git_repo, monkeypatch, capsys
 ):
-    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    (tmp_path / "README.md").write_text("hello\n")
-    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    (git_repo / "README.md").write_text("hello\n")
+    subprocess.run(["git", "add", "README.md"], cwd=git_repo, check=True)
     subprocess.run(
         ["git", "-c", "user.email=t@t.com", "-c", "user.name=t", "commit", "-q", "-m", "init"],
-        cwd=tmp_path,
+        cwd=git_repo,
         check=True,
     )
-    (tmp_path / "top.py").write_text("def add(a, b):\n    return a + b\n")
-    sub = tmp_path / "sub"
+    (git_repo / "top.py").write_text("def add(a, b):\n    return a + b\n")
+    sub = git_repo / "sub"
     sub.mkdir()
     (sub / "bad.py").write_text('def test_x():\n    """a docstring"""\n')
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(git_repo)
 
     exit_code = guard._scan_main()
 
