@@ -815,6 +815,49 @@ def test_attribute_with_a_multi_line_block_comment_whose_close_line_opens_anothe
     assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
+def test_multi_line_block_comment_closed_before_a_trailing_attribute_with_a_comment_marker_names_the_method():
+    text = (
+        "[Fact] /* a\n"
+        'end */ [Trait("k", "/*")]\n'
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_multi_line_block_comment_closed_before_a_trailing_line_comment_with_a_comment_marker_names_the_method():
+    text = (
+        "[Fact] /* a\n"
+        "end */ // see /* x\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_a_trailing_block_comment_on_an_earlier_method_line_does_not_name_a_later_method():
+    text = (
+        "[Fact] /* flaky */\n"
+        "public void Y() { } /* done */\n"
+        "/// <summary>d</summary>\n"
+        "public void Helper() { }\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
 @pytest.mark.parametrize(
     "name",
     ["Fact", "Theory", "Test", "TestCase", "TestMethod", "FactAttribute", "Xunit.Fact", "Xunit.FactAttribute"],
