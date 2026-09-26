@@ -762,12 +762,16 @@ def _csharp_leading_block_remainder(spans, lines, li):
         end_li = next_end_li
 
 
+def _csharp_is_trivia_comment_line(stripped):
+    return stripped.startswith("//")
+
+
 def _csharp_walk_past_attribute_lines(spans, lines, start_li):
     li = start_li
     attribute_names = []
     while li < len(lines):
         stripped = lines[li].strip()
-        if not stripped or stripped.startswith("//"):
+        if not stripped or _csharp_is_trivia_comment_line(stripped):
             li += 1
             continue
         leading_block = _csharp_leading_block_remainder(spans, lines, li)
@@ -834,7 +838,7 @@ def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
                     li = block_start_li
                     break
                 return None
-        if stripped.startswith("/*") or (stripped.startswith("//") and not stripped.startswith("///")):
+        if stripped.startswith("/*") or _csharp_is_trivia_comment_line(stripped):
             li -= 1
             while li >= 0 and not lines[li].strip():
                 li -= 1

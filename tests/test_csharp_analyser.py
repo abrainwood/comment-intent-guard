@@ -2386,3 +2386,36 @@ def test_two_standalone_block_comments_on_one_line_before_an_attribute_before_a_
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_attribute_before_doc_block_crosses_a_stray_triple_slash_line_on_the_way_up():
+    text = (
+        "[Fact]\n"
+        "/// a\n"
+        "// c\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+    lines = guard._split_rows(text)
+    spans = guard._csharp_comment_spans(text)
+
+    found_before_the_later_doc_block = guard._csharp_test_attribute_before_doc_block(spans, lines, 3)
+
+    assert found_before_the_later_doc_block is True
+
+
+def test_a_line_comment_before_a_signature_containing_a_url_literal_still_names_the_method():
+    text = (
+        "/// doc\n"
+        "[Fact]\n"
+        "// c\n"
+        'public void X(string url = "http://example.com")\n'
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
