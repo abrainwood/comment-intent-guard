@@ -739,20 +739,17 @@ def _csharp_consume_attribute_line(lines, li):
     return names, li, rest
 
 
-def _csharp_block_span_starting_at(spans, li):
-    return next((s for s in spans if s[0] == "block" and s[1] == li), None)
-
-
 def _csharp_leading_block_remainder(spans, lines, li):
     if not lines[li].lstrip(" \t").startswith("/*"):
         return None
-    block = _csharp_block_span_starting_at(spans, li)
-    if block is None:
+    if not any(s[0] == "block" and s[1] == li for s in spans):
         return None
-    start_li, end_li = block[1], block[2]
-    close = lines[end_li].find("*/")
-    remainder = lines[end_li][close + 2:] if close != -1 else ""
-    return start_li, end_li, remainder.lstrip(" \t")
+    end_li, rest = _csharp_skip_comments(lines, li, lines[li])
+    return li, end_li, rest
+
+
+def _csharp_is_line_comment(stripped):
+    return stripped.startswith("//")
 
 
 def _csharp_walk_past_attribute_lines(spans, lines, start_li):
@@ -760,7 +757,7 @@ def _csharp_walk_past_attribute_lines(spans, lines, start_li):
     attribute_names = []
     while li < len(lines):
         stripped = lines[li].strip()
-        if not stripped or stripped.startswith("///"):
+        if not stripped or _csharp_is_line_comment(stripped):
             li += 1
             continue
         leading_block = _csharp_leading_block_remainder(spans, lines, li)
@@ -827,7 +824,7 @@ def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
                     li = block_start_li
                     break
                 return None
-        if stripped.startswith("/*") or (stripped.startswith("//") and not stripped.startswith("///")):
+        if stripped.startswith("/*") or _csharp_is_line_comment(stripped):
             li -= 1
             while li >= 0 and not lines[li].strip():
                 li -= 1
