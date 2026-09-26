@@ -743,6 +743,18 @@ def _csharp_block_span_starting_at(spans, li):
     return next((s for s in spans if s[0] == "block" and s[1] == li), None)
 
 
+def _csharp_leading_block_remainder(spans, lines, li, stripped):
+    if not stripped.startswith("/*"):
+        return None
+    block = _csharp_block_span_starting_at(spans, li)
+    if block is None:
+        return None
+    start_li, end_li = block[1], block[2]
+    close = lines[end_li].find("*/")
+    remainder = lines[end_li][close + 2:] if close != -1 else ""
+    return start_li, end_li, remainder
+
+
 def _csharp_walk_past_attribute_lines(spans, lines, start_li):
     li = start_li
     attribute_names = []
@@ -751,11 +763,9 @@ def _csharp_walk_past_attribute_lines(spans, lines, start_li):
         if not stripped or stripped.startswith("///"):
             li += 1
             continue
-        block = _csharp_block_span_starting_at(spans, li) if stripped.startswith("/*") else None
-        if block is not None:
-            end_li = block[2]
-            close = lines[end_li].find("*/")
-            remainder = lines[end_li][close + 2:] if close != -1 else ""
+        leading_block = _csharp_leading_block_remainder(spans, lines, li, stripped)
+        if leading_block is not None:
+            _start_li, end_li, remainder = leading_block
             tail = remainder.lstrip(" \t")
             if tail == "":
                 li = end_li + 1
@@ -808,17 +818,17 @@ def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
         if block_span is not None:
             li = block_span[1]
             continue
-        leading_block = _csharp_block_span_starting_at(spans, li) if stripped.startswith("/*") else None
+        leading_block = _csharp_leading_block_remainder(spans, lines, li, stripped)
         if leading_block is not None:
-            end_li = leading_block[2]
-            close = lines[end_li].find("*/")
-            remainder = lines[end_li][close + 2:] if close != -1 else ""
+            block_start_li, end_li, remainder = leading_block
             tail = remainder.lstrip(" \t")
-            same_line_group = _csharp_attribute_groups_from(lines, end_li, tail, close_li) if tail else None
-            if same_line_group is not None:
-                group = same_line_group
-                li = end_li
-                break
+            if tail:
+                same_line_group = _csharp_attribute_groups_from(lines, end_li, tail, close_li)
+                if same_line_group is not None:
+                    group = same_line_group
+                    li = block_start_li
+                    break
+                return None
         if stripped.startswith("/*") or (stripped.startswith("//") and not stripped.startswith("///")):
             li -= 1
             while li >= 0 and not lines[li].strip():
@@ -827,10 +837,8 @@ def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
                 return None
             continue
         return None
-    if group[1] > close_li:
-        return None
-    attrs_text, end_li, remainder = group
-    return attrs_text, li, end_li, remainder
+    attrs_text, _end_li, remainder = group
+    return attrs_text, li, remainder
 
 
 def _csharp_test_attribute_before_doc_block(spans, lines, start_li):
@@ -846,16 +854,16 @@ def _csharp_test_attribute_before_doc_block(spans, lines, start_li):
         resolved = _csharp_resolve_attribute_group_backward(spans, lines, li, close_li)
         if resolved is None:
             break
-        attrs_text, resolved_start_li, _end_li, remainder = resolved
+        attrs_text, resolved_start_li, remainder = resolved
         if remainder != "":
-            return False
+            if not found_any:
+                return False
+            break
         attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
         found_any = True
         li = resolved_start_li - 1
         while li >= 0 and not lines[li].strip():
             li -= 1
-    if not found_any:
-        return False
     return any(_is_csharp_test_attribute(n) for n in attribute_names)
 
 
