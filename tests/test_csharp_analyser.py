@@ -1009,6 +1009,22 @@ def test_an_attribute_inside_an_open_block_comment_does_not_name_the_method():
     assert violations == []
 
 
+def test_an_attribute_inside_an_open_block_comment_before_a_single_line_comment_does_not_name_the_method():
+    text = (
+        "[Obsolete] /* a\n"
+        "[Fact]\n"
+        "/* c */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
 def test_a_blank_line_between_two_stacked_single_line_block_comments_names_the_method():
     text = (
         "[Fact] /* a */\n"
