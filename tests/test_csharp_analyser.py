@@ -2327,3 +2327,62 @@ def test_same_named_documented_test_methods_in_different_classes_are_each_blocke
 )
 def test_skip_comments_consumes_text_that_is_only_comments(text, expected):
     assert guard._csharp_skip_comments([text], 0, text)[1] == expected
+
+
+def test_doc_comment_before_an_attribute_then_a_line_comment_then_the_signature_names_the_method():
+    text = (
+        "/// doc\n"
+        "[Fact]\n"
+        "// c\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_doc_comment_before_a_line_comment_then_an_attribute_then_the_signature_names_the_method():
+    text = (
+        "/// doc\n"
+        "// c\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_doc_comment_before_an_attribute_then_two_standalone_block_comments_on_one_line_names_the_method():
+    text = (
+        "/// doc\n"
+        "[Fact]\n"
+        "/* a */ /* b */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_two_standalone_block_comments_on_one_line_before_an_attribute_before_a_doc_comment_names_the_method():
+    text = (
+        "/* a */ /* b */ [Fact]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
