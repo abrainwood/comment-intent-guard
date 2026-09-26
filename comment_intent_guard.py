@@ -702,10 +702,14 @@ def _csharp_skip_comments(lines, li, text, limit=None):
         if rest.startswith("//"):
             return li, ""
         if not rest.startswith("/*"):
-            if rest == "" and limit is not None and li + 1 <= limit and lines[li + 1].lstrip(" \t").startswith("/*"):
-                li += 1
-                rest = lines[li].strip()
-                continue
+            if rest == "" and limit is not None:
+                peek = li + 1
+                while peek <= limit and not lines[peek].strip():
+                    peek += 1
+                if peek <= limit and lines[peek].lstrip(" \t").startswith("/*"):
+                    li = peek
+                    rest = lines[li].strip()
+                    continue
             return li, rest
         close = rest.find("*/", 2)
         if close != -1:
@@ -783,7 +787,11 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
     group = _csharp_line_attribute_group(lines, li, close_li)
     while group is None:
         open_li = _csharp_find_block_comment_open(lines, li)
-        if open_li is None:
+        if open_li is None and lines[li].lstrip(" \t").startswith("/*"):
+            open_li = li - 1
+            while open_li >= 0 and not lines[open_li].strip():
+                open_li -= 1
+        if open_li is None or open_li < 0:
             return False
         li = open_li
         group = _csharp_line_attribute_group(lines, li, close_li)
