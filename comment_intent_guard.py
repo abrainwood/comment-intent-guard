@@ -696,12 +696,16 @@ def _csharp_find_block_comment_open(lines, li):
     return None
 
 
-def _csharp_skip_comments(lines, li, text):
+def _csharp_skip_comments(lines, li, text, limit=None):
     rest = text.strip()
     while True:
         if rest.startswith("//"):
             return li, ""
         if not rest.startswith("/*"):
+            if rest == "" and limit is not None and li + 1 <= limit and lines[li + 1].lstrip(" \t").startswith("/*"):
+                li += 1
+                rest = lines[li].strip()
+                continue
             return li, rest
         close = rest.find("*/", 2)
         if close != -1:
@@ -714,7 +718,7 @@ def _csharp_skip_comments(lines, li, text):
         rest = after.strip()
 
 
-def _csharp_line_attribute_group(lines, li):
+def _csharp_line_attribute_group(lines, li, limit=None):
     groups = []
     tail = lines[li].lstrip(" \t")
     while True:
@@ -722,7 +726,7 @@ def _csharp_line_attribute_group(lines, li):
         if end is None:
             break
         groups.append(tail[:end])
-        li, tail = _csharp_skip_comments(lines, li, tail[end:])
+        li, tail = _csharp_skip_comments(lines, li, tail[end:], limit)
     if not groups:
         return None
     return (" ".join(groups), li, tail)
@@ -776,14 +780,15 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
     if li < 0:
         return False
     close_li = li
-    group = _csharp_line_attribute_group(lines, li)
-    if group is None:
-        open_li = _csharp_find_block_comment_open(lines, close_li)
+    group = _csharp_line_attribute_group(lines, li, close_li)
+    while group is None:
+        open_li = _csharp_find_block_comment_open(lines, li)
         if open_li is None:
             return False
-        group = _csharp_line_attribute_group(lines, open_li)
-        if group is None or group[1] != close_li:
-            return False
+        li = open_li
+        group = _csharp_line_attribute_group(lines, li, close_li)
+    if group[1] != close_li:
+        return False
     attrs_text, _, remainder = group
     if remainder != "":
         return False
