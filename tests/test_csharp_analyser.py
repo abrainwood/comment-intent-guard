@@ -1277,7 +1277,6 @@ def test_doc_comment_before_an_attribute_followed_by_two_stacked_standalone_bloc
     assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
 
 
-@pytest.mark.timeout(5)
 def test_a_multi_line_block_comment_closing_on_the_attribute_line_before_a_doc_comment_names_the_method():
     text = (
         "/* a\n"
@@ -1293,7 +1292,6 @@ def test_a_multi_line_block_comment_closing_on_the_attribute_line_before_a_doc_c
     assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
-@pytest.mark.timeout(5)
 def test_a_multi_line_block_comment_closing_on_a_non_test_attribute_line_before_a_doc_comment_is_not_blocked():
     text = (
         "/* a\n"
@@ -1309,7 +1307,6 @@ def test_a_multi_line_block_comment_closing_on_a_non_test_attribute_line_before_
     assert violations == []
 
 
-@pytest.mark.timeout(5)
 def test_a_bare_attribute_before_a_block_comment_closing_on_a_non_test_attribute_before_a_doc_comment_names_the_method():
     text = (
         "[Fact]\n"

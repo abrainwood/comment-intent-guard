@@ -743,8 +743,8 @@ def _csharp_block_span_starting_at(spans, li):
     return next((s for s in spans if s[0] == "block" and s[1] == li), None)
 
 
-def _csharp_leading_block_remainder(spans, lines, li, stripped):
-    if not stripped.startswith("/*"):
+def _csharp_leading_block_remainder(spans, lines, li):
+    if not lines[li].lstrip(" \t").startswith("/*"):
         return None
     block = _csharp_block_span_starting_at(spans, li)
     if block is None:
@@ -752,7 +752,7 @@ def _csharp_leading_block_remainder(spans, lines, li, stripped):
     start_li, end_li = block[1], block[2]
     close = lines[end_li].find("*/")
     remainder = lines[end_li][close + 2:] if close != -1 else ""
-    return start_li, end_li, remainder
+    return start_li, end_li, remainder.lstrip(" \t")
 
 
 def _csharp_walk_past_attribute_lines(spans, lines, start_li):
@@ -763,16 +763,15 @@ def _csharp_walk_past_attribute_lines(spans, lines, start_li):
         if not stripped or stripped.startswith("///"):
             li += 1
             continue
-        leading_block = _csharp_leading_block_remainder(spans, lines, li, stripped)
+        leading_block = _csharp_leading_block_remainder(spans, lines, li)
         if leading_block is not None:
-            _start_li, end_li, remainder = leading_block
-            tail = remainder.lstrip(" \t")
+            _start_li, end_li, tail = leading_block
             if tail == "":
                 li = end_li + 1
                 continue
             group = _csharp_attribute_groups_from(lines, end_li, tail)
             if group is None:
-                return end_li, attribute_names, remainder
+                return end_li, attribute_names, tail
             attrs_text, resolved_li, rest = group
             attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
             if rest != "":
@@ -818,12 +817,11 @@ def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
         if block_span is not None:
             li = block_span[1]
             continue
-        leading_block = _csharp_leading_block_remainder(spans, lines, li, stripped)
+        leading_block = _csharp_leading_block_remainder(spans, lines, li)
         if leading_block is not None:
-            block_start_li, end_li, remainder = leading_block
-            tail = remainder.lstrip(" \t")
+            block_start_li, end_li, tail = leading_block
             if tail:
-                same_line_group = _csharp_attribute_groups_from(lines, end_li, tail, close_li)
+                same_line_group = _csharp_attribute_groups_from(lines, end_li, tail)
                 if same_line_group is not None:
                     group = same_line_group
                     li = block_start_li
@@ -849,18 +847,12 @@ def _csharp_test_attribute_before_doc_block(spans, lines, start_li):
         return False
     close_li = li
     attribute_names = []
-    found_any = False
     while li >= 0:
         resolved = _csharp_resolve_attribute_group_backward(spans, lines, li, close_li)
-        if resolved is None:
+        if resolved is None or resolved[2] != "":
             break
-        attrs_text, resolved_start_li, remainder = resolved
-        if remainder != "":
-            if not found_any:
-                return False
-            break
+        attrs_text, resolved_start_li, _remainder = resolved
         attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
-        found_any = True
         li = resolved_start_li - 1
         while li >= 0 and not lines[li].strip():
             li -= 1
