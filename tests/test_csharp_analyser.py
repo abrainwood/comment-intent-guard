@@ -1124,6 +1124,81 @@ def test_a_blank_line_before_a_bare_attributes_stacked_comment_names_the_method(
     assert violations == [(_csharp_test_doc_violation("X", 6), (6, 6))]
 
 
+def test_a_line_comment_between_a_stacked_block_comment_and_the_doc_comment_names_the_method():
+    text = (
+        "[Fact] /* a\n"
+        "b */\n"
+        "// c\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_two_bare_attribute_lines_before_a_doc_comment_names_the_method():
+    text = (
+        "[Fact]\n"
+        '[Trait("x", "y")]\n'
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_a_same_line_block_comment_before_an_attribute_before_a_doc_comment_names_the_method():
+    text = (
+        "/* c */ [Fact]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_a_same_line_block_comment_before_a_non_test_attribute_before_a_doc_comment_is_not_blocked():
+    text = (
+        "/* c */ [Obsolete]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_doc_comment_before_an_attribute_followed_by_two_stacked_standalone_block_comments_names_the_method():
+    text = (
+        "/// doc\n"
+        "[Fact]\n"
+        "/* a */\n"
+        "/* b */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
 @pytest.mark.parametrize(
     "name",
     ["Fact", "Theory", "Test", "TestCase", "TestMethod", "FactAttribute", "Xunit.Fact", "Xunit.FactAttribute"],
@@ -1870,6 +1945,53 @@ def test_javadoc_block_between_the_attribute_and_the_signature_is_blocked():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [(_csharp_test_doc_violation("T", 3), (3, 3))]
+
+
+def test_doc_comment_before_an_attribute_followed_by_a_standalone_multi_line_block_comment_names_the_method():
+    text = (
+        "/// doc\n"
+        "[Fact]\n"
+        "/* lead\n"
+        "x */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_doc_comment_before_an_attribute_followed_by_a_block_comment_whose_close_line_has_the_signature_names_the_method():
+    text = (
+        "/// doc\n"
+        "[Fact]\n"
+        "/* lead\n"
+        "*/ public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_doc_comment_before_a_non_test_attribute_then_a_standalone_block_comment_then_fact_names_the_method():
+    text = (
+        "/// doc\n"
+        "[Obsolete]\n"
+        "/* c */\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
 
 
 @pytest.mark.parametrize(
