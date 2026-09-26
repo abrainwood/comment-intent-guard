@@ -858,6 +858,272 @@ def test_a_trailing_block_comment_on_an_earlier_method_line_does_not_name_a_late
     assert violations == []
 
 
+def test_two_stacked_block_comments_on_one_line_before_a_doc_comment_names_the_method():
+    text = (
+        "[Fact] /* a\n"
+        "b */ /* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_two_stacked_block_comments_on_separate_lines_before_a_doc_comment_names_the_method():
+    text = (
+        "[Fact] /* a\n"
+        "b */\n"
+        "/* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 6), (6, 6))]
+
+
+def test_three_stacked_block_comments_before_a_doc_comment_names_the_method():
+    text = (
+        "[Fact] /* a\n"
+        "b */ /* c\n"
+        "d */\n"
+        "/* e\n"
+        "f */\n"
+        "/// <summary>g</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 7), (7, 7))]
+
+
+def test_two_stacked_block_comments_before_a_non_test_attribute_is_not_blocked():
+    text = (
+        "[Obsolete] /* a\n"
+        "b */ /* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_code_line_between_the_attribute_and_a_stacked_comment_does_not_name_a_later_method():
+    text = (
+        "[Fact] /* flaky */\n"
+        "public void Y()\n"
+        "{\n"
+        "}\n"
+        "/* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void Helper()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_stacked_comment_opener_on_a_code_line_does_not_name_a_later_method():
+    text = (
+        "public void Y() /* a\n"
+        "b */ /* c\n"
+        "d */\n"
+        "/// doc\n"
+        "public void Z()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_stacked_comment_with_a_trailing_attribute_on_its_middle_close_line_names_the_method():
+    text = (
+        "[Fact] /* a\n"
+        'b */ [Trait("x", "y")] /* c\n'
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_an_attribute_line_without_a_comment_marker_above_a_standalone_comment_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_an_attribute_inside_an_open_block_comment_does_not_name_the_method():
+    text = (
+        "[Obsolete] /* a\n"
+        "[Fact]\n"
+        "/* b\n"
+        "c */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_an_attribute_inside_an_open_block_comment_before_a_single_line_comment_does_not_name_the_method():
+    text = (
+        "[Obsolete] /* a\n"
+        "[Fact]\n"
+        "/* c */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_blank_line_between_two_stacked_single_line_block_comments_names_the_method():
+    text = (
+        "[Fact] /* a */\n"
+        "\n"
+        "/* c */\n"
+        "/// d\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_a_blank_line_between_two_stacked_multi_line_block_comments_names_the_method():
+    text = (
+        "[Fact] /* a\n"
+        "b */\n"
+        "\n"
+        "/* c\n"
+        "d */\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 7), (7, 7))]
+
+
+def test_an_earlier_unrelated_block_comment_does_not_hide_a_bare_attribute_names_the_method():
+    text = (
+        "[Fact] /* flaky */\n"
+        "public void Y() { }\n"
+        "[Fact]\n"
+        "/* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 7), (7, 7))]
+
+
+def test_a_license_header_block_comment_does_not_hide_a_bare_attribute_names_the_method():
+    text = (
+        "/* license */\n"
+        "class T {\n"
+        "[Fact]\n"
+        "/* c\n"
+        "d */\n"
+        "/// d\n"
+        "public void X()\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 7), (7, 7))]
+
+
+def test_an_earlier_block_comment_does_not_hide_a_bare_attribute_before_a_single_line_comment_names_the_method():
+    text = (
+        "/* h */\n"
+        "[Fact]\n"
+        "/* c */\n"
+        "/// d\n"
+        "public void X()\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_a_blank_line_before_a_bare_attributes_stacked_comment_names_the_method():
+    text = (
+        "[Fact]\n"
+        "\n"
+        "/* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 6), (6, 6))]
+
+
 @pytest.mark.parametrize(
     "name",
     ["Fact", "Theory", "Test", "TestCase", "TestMethod", "FactAttribute", "Xunit.Fact", "Xunit.FactAttribute"],
