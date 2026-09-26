@@ -1043,6 +1043,71 @@ def test_a_blank_line_between_two_stacked_multi_line_block_comments_names_the_me
     assert violations == [(_csharp_test_doc_violation("X", 7), (7, 7))]
 
 
+def test_an_earlier_unrelated_block_comment_does_not_hide_a_bare_attribute_names_the_method():
+    text = (
+        "[Fact] /* flaky */\n"
+        "public void Y() { }\n"
+        "[Fact]\n"
+        "/* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 7), (7, 7))]
+
+
+def test_a_license_header_block_comment_does_not_hide_a_bare_attribute_names_the_method():
+    text = (
+        "/* license */\n"
+        "class T {\n"
+        "[Fact]\n"
+        "/* c\n"
+        "d */\n"
+        "/// d\n"
+        "public void X()\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 7), (7, 7))]
+
+
+def test_an_earlier_block_comment_does_not_hide_a_bare_attribute_before_a_single_line_comment_names_the_method():
+    text = (
+        "/* h */\n"
+        "[Fact]\n"
+        "/* c */\n"
+        "/// d\n"
+        "public void X()\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_a_blank_line_before_a_bare_attributes_stacked_comment_names_the_method():
+    text = (
+        "[Fact]\n"
+        "\n"
+        "/* c\n"
+        "d */\n"
+        "/// <summary>d</summary>\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 6), (6, 6))]
+
+
 @pytest.mark.parametrize(
     "name",
     ["Fact", "Theory", "Test", "TestCase", "TestMethod", "FactAttribute", "Xunit.Fact", "Xunit.FactAttribute"],

@@ -687,15 +687,6 @@ def _csharp_find_block_comment_close(lines, li):
     return None
 
 
-def _csharp_find_block_comment_open(lines, li):
-    li -= 1
-    while li >= 0:
-        if "/*" in lines[li]:
-            return li
-        li -= 1
-    return None
-
-
 def _csharp_skip_comments(lines, li, text, limit=None):
     rest = text.strip()
     while True:
@@ -777,7 +768,11 @@ def _csharp_test_method_after_doc_block(lines, end_li):
     return found if saw_test_attribute else None
 
 
-def _csharp_test_attribute_before_doc_block(lines, start_li):
+def _csharp_enclosing_block_span(spans, li):
+    return next((s for s in spans if s[0] == "block" and s[1] < li <= s[2]), None)
+
+
+def _csharp_test_attribute_before_doc_block(spans, lines, start_li):
     li = start_li - 1
     while li >= 0 and not lines[li].strip():
         li -= 1
@@ -786,14 +781,17 @@ def _csharp_test_attribute_before_doc_block(lines, start_li):
     close_li = li
     group = _csharp_line_attribute_group(lines, li, close_li)
     while group is None:
-        open_li = _csharp_find_block_comment_open(lines, li)
-        if open_li is None and lines[li].lstrip(" \t").startswith("/*"):
-            open_li = li - 1
-            while open_li >= 0 and not lines[open_li].strip():
-                open_li -= 1
-        if open_li is None or open_li < 0:
+        block_span = _csharp_enclosing_block_span(spans, li)
+        if block_span is not None:
+            li = block_span[1]
+        elif lines[li].lstrip(" \t").startswith("/*"):
+            li -= 1
+            while li >= 0 and not lines[li].strip():
+                li -= 1
+            if li < 0:
+                return False
+        else:
             return False
-        li = open_li
         group = _csharp_line_attribute_group(lines, li, close_li)
     if group[1] != close_li:
         return False
@@ -811,7 +809,7 @@ def _csharp_test_doc_blocking_violations(spans, lines):
         if kind != "doc":
             continue
         found = _csharp_test_method_after_doc_block(lines, end_li)
-        if found is None and _csharp_test_attribute_before_doc_block(lines, start_li):
+        if found is None and _csharp_test_attribute_before_doc_block(spans, lines, start_li):
             found, _attribute_names = _csharp_method_signature_after_attribute_lines(lines, end_li + 1)
         if found is not None and found[1] not in seen_rows:
             seen_rows.add(found[1])
