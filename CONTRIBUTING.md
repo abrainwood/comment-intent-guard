@@ -6,7 +6,7 @@ This is a Claude Code plugin, not a packaged Python distribution - there's
 no `pip install -e .`. Install the pinned dependencies CI uses directly:
 
 ```sh
-pip install ruff==0.16.5 pytest==8.3.4 pyyaml==6.0.2 pytest-xdist==3.6.1
+pip install ruff==0.16.5 pytest==8.3.4 pyyaml==6.0.2 pytest-xdist==3.6.1 pytest-timeout==2.3.1
 ```
 
 Python 3.12 or newer (see the README's Requirements section for why).
