@@ -742,24 +742,11 @@ def _csharp_consume_attribute_line(lines, li):
 def _csharp_leading_block_remainder(spans, lines, li):
     if not lines[li].lstrip(" \t").startswith("/*"):
         return None
-    blocks = [s for s in spans if s[0] == "block"]
-    idx = next((i for i, s in enumerate(blocks) if s[1] == li), None)
-    if idx is None:
+    block = next((s for s in spans if s[0] == "block" and s[1] == li), None)
+    if block is None:
         return None
-    start_li = li
-    end_li = blocks[idx][2]
-    search_from = 0
-    while True:
-        close = lines[end_li].find("*/", search_from)
-        remainder = lines[end_li][close + 2:] if close != -1 else ""
-        stripped_remainder = remainder.lstrip(" \t")
-        has_next_block_on_this_line = idx + 1 < len(blocks) and blocks[idx + 1][1] == end_li
-        if not (stripped_remainder.startswith("/*") and has_next_block_on_this_line):
-            return start_li, end_li, stripped_remainder
-        idx += 1
-        next_end_li = blocks[idx][2]
-        search_from = (close + 2) if next_end_li == end_li else 0
-        end_li = next_end_li
+    end_li, rest = _csharp_skip_comments(lines, li, lines[li])
+    return li, end_li, rest
 
 
 def _csharp_is_trivia_comment_line(stripped):
