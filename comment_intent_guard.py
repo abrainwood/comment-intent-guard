@@ -574,7 +574,9 @@ def _csharp_comment_spans(text):
             i = literal_end
             continue
         if ch == "/" and i + 1 < n and text[i + 1] == "/":
-            is_doc = i + 2 < n and text[i + 2] == "/"
+            is_triple = i + 2 < n and text[i + 2] == "/" and not (i + 3 < n and text[i + 3] == "/")
+            line_start = text.rfind("\n", 0, i) + 1
+            is_doc = is_triple and text[line_start:i].strip() == ""
             marker_len = 3 if is_doc else 2
             li = line_at(i)
             eol = text.find("\n", i)
@@ -804,6 +806,27 @@ def _csharp_enclosing_block_span(spans, li):
     return next((s for s in spans if s[0] == "block" and s[1] < li <= s[2]), None)
 
 
+def _csharp_last_block_comment_close_on_line(line):
+    last = None
+    i, n = 0, len(line)
+    while i < n:
+        literal_end = _csharp_try_skip_literal(line, i)
+        if literal_end is not None:
+            i = literal_end
+            continue
+        if line[i] == "/" and i + 1 < n and line[i + 1] == "/":
+            break
+        if line[i] == "/" and i + 1 < n and line[i + 1] == "*":
+            close = line.find("*/", i + 2)
+            if close == -1:
+                break
+            last = close + 2
+            i = last
+            continue
+        i += 1
+    return last
+
+
 def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
     while True:
         group = _csharp_line_attribute_group(lines, li, close_li)
@@ -823,6 +846,13 @@ def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
                     group = same_line_group
                     li = block_start_li
                     break
+                last_close = _csharp_last_block_comment_close_on_line(lines[li])
+                if last_close is not None:
+                    remainder = lines[li][last_close:]
+                    fallback_group = _csharp_attribute_groups_from(lines, li, remainder.lstrip(" \t"), close_li)
+                    if fallback_group is not None:
+                        group = fallback_group
+                        break
                 return None
         if stripped.startswith("/*") or _csharp_is_line_comment(stripped):
             li -= 1

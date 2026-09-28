@@ -2511,3 +2511,143 @@ def test_skip_comments_consumes_text_that_is_only_comments(text, expected):
     assert guard._csharp_skip_comments([text], 0, text)[1] == expected
 
 
+def test_four_slash_comment_before_attribute_is_not_a_doc_comment():
+    text = (
+        "//// c\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+
+
+def test_four_slash_comment_after_attribute_is_skipped_as_trivia():
+    text = (
+        "[Fact]\n"
+        "//// c\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_doc_comment_before_attribute_skips_four_slash_trivia_line():
+    text = (
+        "/// doc\n"
+        "[Fact]\n"
+        "//// c\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_trailing_triple_slash_after_attribute_is_not_a_doc_comment():
+    text = (
+        "[Fact] /// x\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_trailing_triple_slash_on_method_line_does_not_duplicate_or_suppress_the_doc_violation():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        "public void X() /// trailing\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_leading_triple_slash_after_code_on_the_line_is_not_a_doc_comment():
+    text = (
+        "int y = 1; /// x\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_triple_slash_inside_a_string_literal_is_not_a_doc_comment():
+    text = (
+        'var s = "/// x";\n'
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_backward_attribute_binds_to_code_after_last_block_comment_close_on_a_mixed_line():
+    text = (
+        "/* a */ int q; /* b */ [Fact]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_backward_attribute_after_last_block_comment_close_that_is_not_a_test_attribute_finds_nothing():
+    text = (
+        "/* a */ int q; /* b */ [Obsolete]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_backward_attribute_before_last_block_comment_close_binds_to_the_next_statement_not_the_method():
+    text = (
+        "/* a */ [Fact] /* b */ int q;\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
