@@ -1633,7 +1633,7 @@ def test_double_slash_inside_a_string_literal_is_not_a_comment():
 def test_four_slash_comment_is_a_plain_line_comment_span():
     spans = guard._csharp_comment_spans("//// c\n")
 
-    assert spans == [("line", 0, 0, "// c")]
+    assert spans == [("line", 0, 0, "// c", None)]
 
 
 def test_unterminated_regular_string_does_not_swallow_the_next_real_comment():
@@ -1641,7 +1641,7 @@ def test_unterminated_regular_string_does_not_swallow_the_next_real_comment():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 1, 1, " fixed on 2026-01-05")]
+    assert spans == [("line", 1, 1, " fixed on 2026-01-05", None)]
 
 
 def test_unterminated_block_comment_consumes_the_rest_of_the_file_as_a_single_span():
@@ -1649,7 +1649,7 @@ def test_unterminated_block_comment_consumes_the_rest_of_the_file_as_a_single_sp
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("block", 0, 0, " a // closes #12")]
+    assert spans == [("block", 0, 0, " a // closes #12", None)]
 
 
 def test_two_tightly_adjacent_block_comments_on_one_line_each_get_their_own_span():
@@ -1658,9 +1658,9 @@ def test_two_tightly_adjacent_block_comments_on_one_line_each_get_their_own_span
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == [
-        ("block", 0, 0, "a"),
-        ("block", 0, 0, "b"),
-        ("line", 0, 0, " closes #12"),
+        ("block", 0, 0, "a", 3),
+        ("block", 0, 0, "b", 8),
+        ("line", 0, 0, " closes #12", None),
     ]
 
 
@@ -1670,8 +1670,8 @@ def test_empty_block_comment_close_search_starts_immediately_after_the_opener():
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == [
-        ("block", 0, 0, ""),
-        ("line", 0, 0, " closes #12"),
+        ("block", 0, 0, "", 2),
+        ("line", 0, 0, " closes #12", None),
     ]
 
 
@@ -1680,7 +1680,7 @@ def test_adjacent_quotes_in_a_regular_string_are_not_doubling_escaped():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " fixed on 2026-01-05")]
+    assert spans == [("line", 0, 0, " fixed on 2026-01-05", None)]
 
 
 def test_regular_string_escapes_a_quote_with_backslash_not_doubling():
@@ -1688,7 +1688,7 @@ def test_regular_string_escapes_a_quote_with_backslash_not_doubling():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " fixed on 2026-01-05")]
+    assert spans == [("line", 0, 0, " fixed on 2026-01-05", None)]
 
 
 def test_escaped_quote_in_interpolated_string_text_is_not_a_comment_boundary():
@@ -1696,7 +1696,7 @@ def test_escaped_quote_in_interpolated_string_text_is_not_a_comment_boundary():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real #1")]
+    assert spans == [("line", 0, 0, " real #1", None)]
 
 
 def test_skip_char_literal_consumes_an_escaped_quote_whole():
@@ -1720,7 +1720,7 @@ def test_escaped_quote_char_literal_is_skipped_whole():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real #2")]
+    assert spans == [("line", 0, 0, " real #2", None)]
 
 
 def test_escaped_backslash_char_literal_is_skipped_whole():
@@ -1728,7 +1728,7 @@ def test_escaped_backslash_char_literal_is_skipped_whole():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real #3")]
+    assert spans == [("line", 0, 0, " real #3", None)]
 
 
 def test_skip_raw_interpolation_hole_tracks_nested_brace_depth_past_a_literal():
@@ -1744,7 +1744,7 @@ def test_nested_brace_depth_in_a_single_dollar_raw_string_hole_is_tracked_past_t
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " closes #12")]
+    assert spans == [("line", 0, 0, " closes #12", None)]
 
 
 def test_nested_braces_and_string_inside_a_raw_interpolation_hole_are_skipped():
@@ -1752,7 +1752,7 @@ def test_nested_braces_and_string_inside_a_raw_interpolation_hole_are_skipped():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real #4")]
+    assert spans == [("line", 0, 0, " real #4", None)]
 
 
 def test_skip_interpolated_string_consumes_a_literal_double_brace_pair():
@@ -1768,7 +1768,7 @@ def test_double_brace_immediately_before_the_closing_quote_stays_inside_the_stri
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " closes #12")]
+    assert spans == [("line", 0, 0, " closes #12", None)]
 
 
 def test_double_brace_literal_inside_a_regular_interpolated_string_is_not_a_hole():
@@ -1776,7 +1776,7 @@ def test_double_brace_literal_inside_a_regular_interpolated_string_is_not_a_hole
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real #5")]
+    assert spans == [("line", 0, 0, " real #5", None)]
 
 
 def test_line_comment_yields_a_line_span_with_its_text():
@@ -1784,7 +1784,7 @@ def test_line_comment_yields_a_line_span_with_its_text():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " trailing note")]
+    assert spans == [("line", 0, 0, " trailing note", None)]
 
 
 def test_triple_slash_yields_a_doc_span_not_a_line_span():
@@ -1792,7 +1792,7 @@ def test_triple_slash_yields_a_doc_span_not_a_line_span():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("doc", 0, 0, " <summary>Does a thing.</summary>")]
+    assert spans == [("doc", 0, 0, " <summary>Does a thing.</summary>", None)]
 
 
 def test_char_literal_holding_a_quote_does_not_confuse_string_tracking():
@@ -1800,7 +1800,7 @@ def test_char_literal_holding_a_quote_does_not_confuse_string_tracking():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " trailing")]
+    assert spans == [("line", 0, 0, " trailing", None)]
 
 
 def test_verbatim_string_trailing_backslash_does_not_escape_the_closing_quote():
@@ -1809,7 +1809,7 @@ def test_verbatim_string_trailing_backslash_does_not_escape_the_closing_quote():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real")]
+    assert spans == [("line", 0, 0, " real", None)]
 
 
 def test_verbatim_string_doubled_quote_followed_by_a_backslash_stays_in_the_string():
@@ -1817,7 +1817,7 @@ def test_verbatim_string_doubled_quote_followed_by_a_backslash_stays_in_the_stri
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " fixed on 2026-01-05")]
+    assert spans == [("line", 0, 0, " fixed on 2026-01-05", None)]
 
 
 def test_slash_star_inside_a_verbatim_string_is_not_a_block_comment():
@@ -1825,7 +1825,7 @@ def test_slash_star_inside_a_verbatim_string_is_not_a_block_comment():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real")]
+    assert spans == [("line", 0, 0, " real", None)]
 
 
 def test_raw_string_containing_triple_slash_is_not_a_doc_comment():
@@ -1833,7 +1833,7 @@ def test_raw_string_containing_triple_slash_is_not_a_doc_comment():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 1, 1, " real")]
+    assert spans == [("line", 1, 1, " real", None)]
 
 
 def test_raw_string_trailing_backslash_before_the_closer_does_not_escape_it():
@@ -1842,7 +1842,7 @@ def test_raw_string_trailing_backslash_before_the_closer_does_not_escape_it():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 1, 1, " real")]
+    assert spans == [("line", 1, 1, " real", None)]
 
 
 def test_dollar_at_interpolated_verbatim_string_backslash_does_not_escape_the_closer():
@@ -1850,7 +1850,7 @@ def test_dollar_at_interpolated_verbatim_string_backslash_does_not_escape_the_cl
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real")]
+    assert spans == [("line", 0, 0, " real", None)]
 
 
 def test_at_dollar_interpolated_verbatim_string_backslash_does_not_escape_the_closer():
@@ -1858,7 +1858,7 @@ def test_at_dollar_interpolated_verbatim_string_backslash_does_not_escape_the_cl
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real")]
+    assert spans == [("line", 0, 0, " real", None)]
 
 
 def test_interpolation_hole_with_a_nested_escaped_quote_does_not_confuse_the_closer():
@@ -1866,7 +1866,7 @@ def test_interpolation_hole_with_a_nested_escaped_quote_does_not_confuse_the_clo
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " fixed on 2026-01-05")]
+    assert spans == [("line", 0, 0, " fixed on 2026-01-05", None)]
 
 
 def test_doubled_braces_in_an_interpolated_string_are_literal_not_a_hole():
@@ -1874,7 +1874,7 @@ def test_doubled_braces_in_an_interpolated_string_are_literal_not_a_hole():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("line", 0, 0, " real")]
+    assert spans == [("line", 0, 0, " real", None)]
 
 
 def test_contiguous_triple_slash_lines_group_into_one_doc_span():
@@ -1883,7 +1883,7 @@ def test_contiguous_triple_slash_lines_group_into_one_doc_span():
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == [
-        ("doc", 0, 2, " <summary>\n Does a thing.\n </summary>"),
+        ("doc", 0, 2, " <summary>\n Does a thing.\n </summary>", None),
     ]
 
 
@@ -1892,7 +1892,7 @@ def test_a_gap_line_breaks_the_doc_comment_run_into_two_spans():
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("doc", 0, 0, " first"), ("doc", 2, 2, " second")]
+    assert spans == [("doc", 0, 0, " first", None), ("doc", 2, 2, " second", None)]
 
 
 def test_block_comment_containing_an_unmatched_quote_still_ends_at_the_real_close():
@@ -1902,7 +1902,7 @@ def test_block_comment_containing_an_unmatched_quote_still_ends_at_the_real_clos
 
     spans = list(guard._csharp_comment_spans(text))
 
-    assert spans == [("block", 0, 0, ' he said "hi ')]
+    assert spans == [("block", 0, 0, ' he said "hi ', 22)]
 
 
 def test_dollar_dollar_raw_interpolated_string_with_json_braces_has_no_findings():
@@ -2888,7 +2888,7 @@ def test_trailing_triple_slash_on_method_line_does_not_duplicate_or_suppress_the
 
 
 def test_bare_triple_slash_at_end_of_file_is_a_doc_comment_span():
-    assert guard._csharp_comment_spans("///") == [("doc", 0, 0, "")]
+    assert guard._csharp_comment_spans("///") == [("doc", 0, 0, "", None)]
 
 
 
@@ -2910,10 +2910,24 @@ def test_triple_slash_after_code_with_an_external_id_is_still_blocked():
 
 
 def test_triple_star_open_is_a_plain_block_comment_not_a_doc_comment():
-    assert guard._csharp_comment_spans("/*** x */") == [("block", 0, 0, "** x ")]
+    assert guard._csharp_comment_spans("/*** x */") == [("block", 0, 0, "** x ", 7)]
 
 
-def test_backward_fallback_reachable_from_a_line_not_starting_with_a_block_comment():
+def test_attribute_before_a_triple_star_block_comment_does_not_name_the_method():
+    text = (
+        "[Fact]\n"
+        "/*** x */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_attribute_trailing_field_code_and_a_block_comment_on_the_line_above_the_doc_names_the_method():
     text = (
         "int q; /* b */ [Fact]\n"
         "/// doc\n"
@@ -2927,7 +2941,7 @@ def test_backward_fallback_reachable_from_a_line_not_starting_with_a_block_comme
     assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
 
 
-def test_backward_fallback_reachable_when_the_leading_block_close_is_followed_directly_by_code_then_the_attribute():
+def test_attribute_after_a_leading_block_comments_close_and_field_code_on_the_line_above_the_doc_names_the_method():
     text = (
         "/* a */ int q; [Fact]\n"
         "/// doc\n"
@@ -2941,7 +2955,7 @@ def test_backward_fallback_reachable_when_the_leading_block_close_is_followed_di
     assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
 
 
-def test_backward_fallback_resolves_on_the_close_line_of_a_multi_line_last_block_comment():
+def test_attribute_after_a_multi_line_block_comments_close_on_the_line_above_the_doc_names_the_method():
     text = (
         "/* a */ int q; /* b\n"
         "c */ [Fact]\n"
@@ -2971,10 +2985,10 @@ def test_doc_before_field_code_with_a_trailing_attribute_documents_the_field_not
     assert violations == []
 
 
-def test_doc_before_an_attribute_with_a_trait_argument_names_the_method_not_trait():
+def test_doc_before_a_field_decorated_with_a_trait_attribute_argument_does_not_name_the_field_trait():
     text = (
         "/// doc\n"
-        '[Fact, Trait("k", "v")]\n'
+        '[Fact] int q; [Fact, Trait("k", "v")]\n'
         "public void X()\n"
         "{\n"
         "}\n"
@@ -2982,7 +2996,7 @@ def test_doc_before_an_attribute_with_a_trait_argument_names_the_method_not_trai
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
-    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+    assert violations == []
 
 
 def test_backward_walk_does_not_treat_an_attribute_still_inside_an_open_block_comment_as_real():
@@ -3028,7 +3042,7 @@ def test_attribute_and_trailing_doc_comment_on_one_line_names_the_next_method():
     assert violations == [(_csharp_test_doc_violation("X", 2), (2, 2))]
 
 
-def test_backward_walk_stops_cleanly_at_code_that_opens_an_unclosed_block_comment_mid_line():
+def test_code_before_an_unclosed_block_comment_is_a_member_boundary_regression_guard():
     text = (
         "[Fact] // c\n"
         "int y; /* a\n"
@@ -3087,3 +3101,182 @@ def test_attribute_after_a_multi_line_javadocs_close_on_its_own_line_names_the_m
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_attribute_before_a_javadoc_followed_by_a_trailing_line_comment_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/** d */ // c\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_attribute_before_a_javadoc_followed_by_a_trailing_block_comment_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/** d */ /* b */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_javadoc_followed_by_a_trailing_line_comment_then_the_attribute_names_the_method():
+    text = (
+        "/** d */ // c\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_multi_line_javadoc_followed_by_a_trailing_line_comment_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/** d\n"
+        " e */ // c\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_javadoc_followed_by_another_adjacent_javadoc_on_the_same_line_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/** a */ /** a */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_javadoc_after_an_unrelated_block_comment_with_matching_tail_text_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/* * d */ /** d */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_javadoc_after_an_unrelated_block_comment_and_code_with_matching_tail_text_names_the_method():
+    text = (
+        "/* * d */ int y; /** d */\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_double_slash_inside_a_string_literal_before_the_attribute_still_names_the_method():
+    text = (
+        'var s = "//"; [Fact]\n'
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_backward_walk_strips_a_full_block_comment_inside_an_unclosed_one_on_the_way_to_the_attribute():
+    text = (
+        "int q; /* [Fact] /* */\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_backward_walk_skips_an_indexer_bracket_before_finding_the_real_attribute():
+    text = (
+        "int q = a[0]; [Fact]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_javadoc_before_a_decorated_field_with_a_trait_attribute_argument_documents_the_field():
+    text = (
+        '/** d */ [Fact] int q; [Trait("k", "v")]\n'
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_javadoc_before_an_attribute_and_method_all_on_the_javadocs_own_line_names_the_method():
+    text = (
+        "/** d */ [Fact] public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 1), (1, 1))]
+
+
+def test_attribute_followed_by_code_before_a_trailing_doc_on_the_same_line_does_not_bind_the_attribute():
+    text = (
+        "[Fact] int q; /// x\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []

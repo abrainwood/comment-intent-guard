@@ -590,10 +590,10 @@ def _csharp_comment_spans(text, trailing_doc_starts=None):
             if is_doc and line_has_code:
                 trailing_doc_starts.add(li)
             if is_doc and is_leading and spans and spans[-1][0] == "doc" and spans[-1][2] + 1 == li:
-                prev_kind, prev_start, _prev_end, prev_content = spans[-1]
-                spans[-1] = (prev_kind, prev_start, li, f"{prev_content}\n{content}")
+                prev_kind, prev_start, _prev_end, prev_content, prev_close_col = spans[-1]
+                spans[-1] = (prev_kind, prev_start, li, f"{prev_content}\n{content}", prev_close_col)
             else:
-                spans.append((kind, li, li, content))
+                spans.append((kind, li, li, content, None))
             i = eol
             continue
         if ch == "/" and i + 1 < n and text[i + 1] == "*":
@@ -607,7 +607,10 @@ def _csharp_comment_spans(text, trailing_doc_starts=None):
             block_kind = "doc" if is_javadoc else "block"
             if block_kind == "doc" and line_has_code:
                 trailing_doc_starts.add(start_li)
-            spans.append((block_kind, start_li, end_li, text[i + 2:end]))
+            close_col = None
+            if close != -1:
+                close_col = close - (text.rfind("\n", 0, close) + 1)
+            spans.append((block_kind, start_li, end_li, text[i + 2:end], close_col))
             i = n if close == -1 else close + 2
             if end_li != start_li:
                 line_has_code = False
@@ -640,7 +643,7 @@ def _scan_csharp_comment_spans(spans, lines):
     run_end = None
     run_lines = []
 
-    for kind, start_li, end_li, content in spans:
+    for kind, start_li, end_li, content, _close_col in spans:
         if kind == "line" and lines[start_li][:lines[start_li].find("//")].strip() == "":
             if run_start is not None and start_li == run_end + 1:
                 run_end = end_li
@@ -709,9 +712,6 @@ def _csharp_find_block_comment_close(lines, li):
     return None
 
 
-_CSHARP_BRACKET_OPEN_RE = re.compile(r"\[")
-
-
 def _csharp_strip_trailing_comments(lines, li, text):
     out = []
     last = 0
@@ -746,10 +746,12 @@ def _csharp_strip_trailing_comments(lines, li, text):
 
 def _csharp_trailing_attribute_group(lines, li, text, limit=None):
     projected_li, projected = _csharp_strip_trailing_comments(lines, li, text)
-    for match in _CSHARP_BRACKET_OPEN_RE.finditer(projected):
-        candidate = _csharp_attribute_groups_from(lines, projected_li, projected[match.start():], limit)
+    start = projected.find("[")
+    while start != -1:
+        candidate = _csharp_attribute_groups_from(lines, projected_li, projected[start:], limit)
         if candidate is not None and candidate[2] == "":
             return candidate
+        start = projected.find("[", start + 1)
     return None
 
 
@@ -881,18 +883,20 @@ def _csharp_method_signature_after_attribute_lines(spans, lines, start_li):
     return ((match.group(1), li + 1) if match else None), attribute_names
 
 
-def _csharp_doc_span_trailing_text(lines, end_li, content):
-    last_content_line = content.rsplit("\n", 1)[-1]
-    close_idx = lines[end_li].find(last_content_line + "*/")
-    if close_idx == -1:
+def _csharp_doc_span_trailing_text(lines, end_li, close_col):
+    if close_col is None:
         return ""
-    return lines[end_li][close_idx + len(last_content_line) + 2:]
+    return lines[end_li][close_col + 2:]
 
 
-def _csharp_method_signature_after_doc_close(spans, lines, end_li, content):
-    trailing = _csharp_doc_span_trailing_text(lines, end_li, content).lstrip(" \t")
+def _csharp_method_signature_after_doc_close(spans, lines, end_li, close_col):
+    trailing = _csharp_doc_span_trailing_text(lines, end_li, close_col).lstrip(" \t")
     if trailing == "":
         return _csharp_method_signature_after_attribute_lines(spans, lines, end_li + 1)
+    skip_li, rest_after_comments = _csharp_skip_comments(lines, end_li, trailing)
+    if rest_after_comments == "":
+        return _csharp_method_signature_after_attribute_lines(spans, lines, skip_li + 1)
+    end_li, trailing = skip_li, rest_after_comments
     group = _csharp_attribute_groups_from(lines, end_li, trailing)
     if group is None:
         return None, []
@@ -905,8 +909,8 @@ def _csharp_method_signature_after_doc_close(spans, lines, end_li, content):
     return found, attribute_names + more_names
 
 
-def _csharp_test_method_after_doc_block(spans, lines, end_li, content):
-    found, attribute_names = _csharp_method_signature_after_doc_close(spans, lines, end_li, content)
+def _csharp_test_method_after_doc_block(spans, lines, end_li, close_col):
+    found, attribute_names = _csharp_method_signature_after_doc_close(spans, lines, end_li, close_col)
     saw_test_attribute = any(_is_csharp_test_attribute(n) for n in attribute_names)
     return found if saw_test_attribute else None
 
@@ -1007,7 +1011,7 @@ def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
 
 
 def _csharp_own_line_attribute_group_before_doc_marker(spans, lines, start_li):
-    for kind, span_li, end_li, content in spans:
+    for kind, span_li, end_li, content, _close_col in spans:
         if kind == "doc" and span_li == start_li and end_li == start_li:
             prefix_len = len(lines[start_li]) - len(content) - 3
             prefix = lines[start_li][:prefix_len]
@@ -1044,12 +1048,12 @@ def _csharp_test_attribute_before_doc_block(spans, lines, start_li, trailing_doc
 def _csharp_test_doc_blocking_violations(spans, lines, trailing_doc_starts):
     violations = []
     seen_rows = set()
-    for kind, start_li, end_li, content in spans:
+    for kind, start_li, end_li, _content, close_col in spans:
         if kind != "doc":
             continue
-        found = _csharp_test_method_after_doc_block(spans, lines, end_li, content)
+        found = _csharp_test_method_after_doc_block(spans, lines, end_li, close_col)
         if found is None and _csharp_test_attribute_before_doc_block(spans, lines, start_li, trailing_doc_starts):
-            found, _attribute_names = _csharp_method_signature_after_doc_close(spans, lines, end_li, content)
+            found, _attribute_names = _csharp_method_signature_after_doc_close(spans, lines, end_li, close_col)
         if found is not None and found[1] not in seen_rows:
             seen_rows.add(found[1])
             name, row = found
@@ -1060,7 +1064,7 @@ def _csharp_test_doc_blocking_violations(spans, lines, trailing_doc_starts):
 
 def _csharp_external_id_blocking_violations(spans, allowed_prefixes):
     violations = []
-    for kind, start_li, end_li, content in spans:
+    for kind, start_li, end_li, content, _close_col in spans:
         if kind != "doc":
             continue
         violations.extend(
