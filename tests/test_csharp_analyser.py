@@ -1675,6 +1675,14 @@ def test_empty_block_comment_close_search_starts_immediately_after_the_opener():
     ]
 
 
+def test_multi_line_block_comment_close_col_is_measured_on_its_own_close_line():
+    text = "/* a\n  b */\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("block", 0, 1, " a\n  b ", 4)]
+
+
 def test_adjacent_quotes_in_a_regular_string_are_not_doubling_escaped():
     text = 'var s = "" // fixed on 2026-01-05\n'
 
@@ -3014,6 +3022,80 @@ def test_backward_walk_does_not_treat_an_attribute_still_inside_an_open_block_co
     assert violations == []
 
 
+def test_backward_walk_skips_a_candidate_attribute_group_followed_by_more_code_to_find_the_real_one():
+    text = (
+        "[Fact] /* a\n"
+        "/* a */ int q; /* b */ [Obsolete] int r; /* c */ [Fact]\n"
+        "/// a\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_javadoc_followed_by_a_multi_line_trailing_block_comment_then_the_attribute_names_the_method():
+    text = (
+        "/** d */ /* x\n"
+        " y */ [Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_javadoc_followed_by_a_multi_line_trailing_block_comment_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/** d */ /* x\n"
+        " y */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_attribute_before_code_on_the_close_line_with_adjacent_block_comment_does_not_bind_through_a_deeper_attribute_group():
+    text = (
+        "[Fact] /* a\n"
+        "/* a */ int q; /* b */ [Obsolete]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_attribute_before_code_on_the_close_line_does_not_bind_through_a_deeper_attribute_group():
+    text = (
+        "[Fact] /* a\n"
+        "*/ int q; /* b */ [Obsolete]\n"
+        "/// a\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
 def test_backward_walk_finds_the_real_attribute_when_it_leads_an_open_block_that_closes_on_the_next_mixed_line():
     text = (
         "[Fact] /* a\n"
@@ -3042,7 +3124,7 @@ def test_attribute_and_trailing_doc_comment_on_one_line_names_the_next_method():
     assert violations == [(_csharp_test_doc_violation("X", 2), (2, 2))]
 
 
-def test_code_before_an_unclosed_block_comment_is_a_member_boundary_regression_guard():
+def test_attribute_above_code_that_opens_an_unclosed_block_binds_to_that_code_not_the_method():
     text = (
         "[Fact] // c\n"
         "int y; /* a\n"
@@ -3101,6 +3183,52 @@ def test_attribute_after_a_multi_line_javadocs_close_on_its_own_line_names_the_m
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_multi_line_javadoc_followed_by_a_longer_triple_slash_line_names_the_method():
+    text = (
+        "/** d\n"
+        " */\n"
+        "/// doc\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_javadoc_followed_by_a_longer_triple_slash_line_then_the_attribute_names_the_method():
+    text = (
+        "/** d */\n"
+        "/// a longer doc\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_attribute_before_a_javadoc_followed_by_a_longer_triple_slash_line_names_the_method():
+    text = (
+        "[Fact]\n"
+        "/** d */\n"
+        "/// a longer doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
 def test_attribute_before_a_javadoc_followed_by_a_trailing_line_comment_names_the_method():
@@ -3216,7 +3344,7 @@ def test_double_slash_inside_a_string_literal_before_the_attribute_still_names_t
     assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
 
 
-def test_backward_walk_strips_a_full_block_comment_inside_an_unclosed_one_on_the_way_to_the_attribute():
+def test_attribute_inside_a_trailing_block_comment_on_the_line_above_the_doc_is_not_real():
     text = (
         "int q; /* [Fact] /* */\n"
         "/// doc\n"
@@ -3230,7 +3358,7 @@ def test_backward_walk_strips_a_full_block_comment_inside_an_unclosed_one_on_the
     assert violations == []
 
 
-def test_backward_walk_skips_an_indexer_bracket_before_finding_the_real_attribute():
+def test_indexer_bracket_before_the_attribute_does_not_confuse_the_backward_scan():
     text = (
         "int q = a[0]; [Fact]\n"
         "/// doc\n"

@@ -590,8 +590,8 @@ def _csharp_comment_spans(text, trailing_doc_starts=None):
             if is_doc and line_has_code:
                 trailing_doc_starts.add(li)
             if is_doc and is_leading and spans and spans[-1][0] == "doc" and spans[-1][2] + 1 == li:
-                prev_kind, prev_start, _prev_end, prev_content, prev_close_col = spans[-1]
-                spans[-1] = (prev_kind, prev_start, li, f"{prev_content}\n{content}", prev_close_col)
+                prev_kind, prev_start, _prev_end, prev_content, _prev_close_col = spans[-1]
+                spans[-1] = (prev_kind, prev_start, li, f"{prev_content}\n{content}", None)
             else:
                 spans.append((kind, li, li, content, None))
             i = eol
@@ -896,8 +896,7 @@ def _csharp_method_signature_after_doc_close(spans, lines, end_li, close_col):
     skip_li, rest_after_comments = _csharp_skip_comments(lines, end_li, trailing)
     if rest_after_comments == "":
         return _csharp_method_signature_after_attribute_lines(spans, lines, skip_li + 1)
-    end_li, trailing = skip_li, rest_after_comments
-    group = _csharp_attribute_groups_from(lines, end_li, trailing)
+    group = _csharp_attribute_groups_from(lines, skip_li, rest_after_comments)
     if group is None:
         return None, []
     attrs_text, resolved_li, rest = group
@@ -1006,7 +1005,7 @@ def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
         deep_group = _csharp_trailing_attribute_group(lines, remainder_li, remainder, close_li)
         if deep_group is not None:
             deep_attrs, deep_li, deep_remainder = deep_group
-            return _CSharpBackwardAttributeGroup(f"{attrs_text} {deep_attrs}", deep_li, deep_remainder, True)
+            return _CSharpBackwardAttributeGroup(deep_attrs, deep_li, deep_remainder, True)
     return _CSharpBackwardAttributeGroup(attrs_text, li, remainder, stop)
 
 
