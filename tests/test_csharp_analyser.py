@@ -3022,7 +3022,7 @@ def test_backward_walk_does_not_treat_an_attribute_still_inside_an_open_block_co
     assert violations == []
 
 
-def test_backward_walk_skips_a_candidate_attribute_group_followed_by_more_code_to_find_the_real_one():
+def test_attribute_after_two_code_members_on_the_line_above_the_doc_names_the_method():
     text = (
         "[Fact] /* a\n"
         "/* a */ int q; /* b */ [Obsolete] int r; /* c */ [Fact]\n"
@@ -3358,7 +3358,7 @@ def test_attribute_inside_a_trailing_block_comment_on_the_line_above_the_doc_is_
     assert violations == []
 
 
-def test_indexer_bracket_before_the_attribute_does_not_confuse_the_backward_scan():
+def test_indexer_bracket_before_the_attribute_still_names_the_method():
     text = (
         "int q = a[0]; [Fact]\n"
         "/// doc\n"
