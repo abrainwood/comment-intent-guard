@@ -2907,3 +2907,169 @@ def test_triple_slash_after_code_with_an_external_id_is_still_blocked():
     violations = guard.find_csharp_blocking_violations(text, "/repo/src/Thing.cs")
 
     assert violations == [(guard._external_id_violation("JIRA-123", "an XML doc comment", 1), (1, 1))]
+
+
+def test_triple_star_open_is_a_plain_block_comment_not_a_doc_comment():
+    assert guard._csharp_comment_spans("/*** x */") == [("block", 0, 0, "** x ")]
+
+
+def test_backward_fallback_reachable_from_a_line_not_starting_with_a_block_comment():
+    text = (
+        "int q; /* b */ [Fact]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_backward_fallback_reachable_when_the_leading_block_close_is_followed_directly_by_code_then_the_attribute():
+    text = (
+        "/* a */ int q; [Fact]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_backward_fallback_resolves_on_the_close_line_of_a_multi_line_last_block_comment():
+    text = (
+        "/* a */ int q; /* b\n"
+        "c */ [Fact]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_forward_walk_method_name_regex_does_not_match_trait_inside_an_attribute_argument():
+    text = (
+        "[Fact]\n"
+        "/// doc\n"
+        '/* a */ int q; /* b */ [Fact, Trait("k", "/* */")]\n'
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_backward_walk_does_not_treat_an_attribute_still_inside_an_open_block_comment_as_real():
+    text = (
+        "/* a\n"
+        "[Fact]\n"
+        "/* a */ /// x\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_backward_walk_finds_the_real_attribute_when_it_leads_an_open_block_that_closes_on_the_next_mixed_line():
+    text = (
+        "[Fact] /* a\n"
+        "/* a */ int q; /* b */ [Fact]\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_attribute_and_trailing_doc_comment_on_one_line_names_the_next_method():
+    text = (
+        "[Fact] /// x\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 2), (2, 2))]
+
+
+def test_backward_walk_stops_cleanly_at_code_that_opens_an_unclosed_block_comment_mid_line():
+    text = (
+        "[Fact] // c\n"
+        "int y; /* a\n"
+        "b */\n"
+        "/// doc\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_two_adjacent_multi_line_javadoc_blocks_after_the_attribute_are_blocked():
+    text = (
+        "[Fact]\n"
+        "/** d\n"
+        " e */\n"
+        "/** d\n"
+        " e */\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 6), (6, 6))]
+
+
+def test_code_after_a_single_line_javadocs_close_ends_the_member_and_is_not_blocked():
+    text = (
+        "[Fact]\n"
+        "/** d */ int y;\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_attribute_after_a_multi_line_javadocs_close_on_its_own_line_names_the_method():
+    text = (
+        "/** d\n"
+        "*/ [Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
