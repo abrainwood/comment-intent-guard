@@ -834,8 +834,6 @@ def _csharp_walk_past_attribute_lines(spans, lines, start_li):
                 continue
             group = _csharp_attribute_groups_from(lines, end_li, tail)
             if group is None:
-                group = _csharp_trailing_attribute_group(lines, end_li, tail)
-            if group is None:
                 return end_li, attribute_names, tail
             attrs_text, resolved_li, rest = group
             attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
@@ -854,11 +852,32 @@ def _csharp_walk_past_attribute_lines(spans, lines, start_li):
     return li, attribute_names, None
 
 
+def _csharp_strip_attribute_bracket_groups(text):
+    out = []
+    last = 0
+    i, n = 0, len(text)
+    while i < n:
+        literal_end = _csharp_try_skip_literal(text, i)
+        if literal_end is not None:
+            i = literal_end
+            continue
+        if text[i] == "[":
+            end = _csharp_skip_attribute_bracket_group(text, i)
+            if end is not None:
+                out.append(text[last:i])
+                last = end
+                i = end
+                continue
+        i += 1
+    out.append(text[last:i])
+    return "".join(out)
+
+
 def _csharp_method_signature_after_attribute_lines(spans, lines, start_li):
     li, attribute_names, rest = _csharp_walk_past_attribute_lines(spans, lines, start_li)
     if rest is None:
         return None, attribute_names
-    match = _CSHARP_METHOD_NAME_RE.search(rest)
+    match = _CSHARP_METHOD_NAME_RE.search(_csharp_strip_attribute_bracket_groups(rest))
     return ((match.group(1), li + 1) if match else None), attribute_names
 
 
@@ -880,7 +899,7 @@ def _csharp_method_signature_after_doc_close(spans, lines, end_li, content):
     attrs_text, resolved_li, rest = group
     attribute_names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
     if rest != "":
-        match = _CSHARP_METHOD_NAME_RE.search(rest)
+        match = _CSHARP_METHOD_NAME_RE.search(_csharp_strip_attribute_bracket_groups(rest))
         return ((match.group(1), resolved_li + 1) if match else None), attribute_names
     found, more_names = _csharp_method_signature_after_attribute_lines(spans, lines, resolved_li + 1)
     return found, attribute_names + more_names

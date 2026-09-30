@@ -2956,7 +2956,7 @@ def test_backward_fallback_resolves_on_the_close_line_of_a_multi_line_last_block
     assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
-def test_forward_walk_method_name_regex_does_not_match_trait_inside_an_attribute_argument():
+def test_doc_before_field_code_with_a_trailing_attribute_documents_the_field_not_a_later_method():
     text = (
         "[Fact]\n"
         "/// doc\n"
@@ -2968,7 +2968,21 @@ def test_forward_walk_method_name_regex_does_not_match_trait_inside_an_attribute
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
-    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+    assert violations == []
+
+
+def test_doc_before_an_attribute_with_a_trait_argument_names_the_method_not_trait():
+    text = (
+        "/// doc\n"
+        '[Fact, Trait("k", "v")]\n'
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
 
 
 def test_backward_walk_does_not_treat_an_attribute_still_inside_an_open_block_comment_as_real():
