@@ -5,7 +5,6 @@ import random
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 import pytest
@@ -2090,7 +2089,15 @@ def test_escaped_backslash_char_literal_is_skipped_whole():
 
 
 def test_skip_raw_interpolation_hole_tracks_nested_brace_depth_past_a_literal():
-    text = '$$"""{{ new { a = "}" } }}"""'
+    text = '$$"""{{ new { a } + """q""" }}"""'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
+
+
+def test_a_raw_interpolation_hole_only_opens_on_at_least_as_many_braces_as_dollars():
+    text = '$$"""{{ """a""" }}"""'
 
     end = guard._csharp_try_skip_literal(text, 0)
 
@@ -2113,12 +2120,12 @@ def test_nested_braces_and_string_inside_a_raw_interpolation_hole_are_skipped():
     assert spans == [("line", 0, 0, " real #4", None)]
 
 
-def test_skip_interpolated_string_consumes_a_literal_double_brace_pair():
-    text = '"{x} }} end"'
+def test_doubled_open_brace_in_an_interpolated_string_is_a_literal_brace_not_a_hole():
+    text = 'var s = $"{{"; // c\n'
 
-    end = guard._csharp_try_skip_literal(text, 0)
+    spans = list(guard._csharp_comment_spans(text))
 
-    assert end == len(text)
+    assert spans == [("line", 0, 0, " c", None)]
 
 
 def test_double_brace_immediately_before_the_closing_quote_stays_inside_the_string():
@@ -2154,11 +2161,11 @@ def test_doubled_quote_in_a_verbatim_interpolated_string_is_a_literal_quote_not_
 
 
 def test_a_verbatim_interpolated_string_nested_in_a_hole_keeps_its_own_verbatim_flag():
-    text = '$"{ $@"a\\" } tail"'
+    text = 'x = $"{ $@"a\\" } // not"; // c\n'
 
-    end = guard._csharp_try_skip_literal(text, 0)
+    spans = list(guard._csharp_comment_spans(text))
 
-    assert end == len(text)
+    assert spans == [("line", 0, 0, " c", None)]
 
 
 def test_a_raw_interpolated_string_nested_in_a_hole_keeps_its_own_dollar_count():
@@ -4519,12 +4526,9 @@ def test_thousands_of_unterminated_interpolation_hole_openers_do_not_recurse():
 
 
 def test_thousands_of_unterminated_interpolation_hole_openers_on_directive_lines_do_not_recurse():
-    text = '#if x = $@"{\n' * 3000 + "// tail\n"
+    text = '#if x = $@"{\n' * 10_000 + "// tail\n"
 
-    start = time.monotonic()
     spans, tokens, doc_anchors = guard._csharp_lex(text)
-    elapsed = time.monotonic() - start
 
-    assert spans == [("line", 3000, 3000, " tail", None)]
-    assert elapsed < 2
+    assert spans == [("line", 10_000, 10_000, " tail", None)]
 

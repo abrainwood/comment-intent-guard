@@ -1049,9 +1049,6 @@ def _csharp_skip_interpolation_stack(text, i, stack):
             if ch == "{" and i + 1 < n and text[i + 1] == "{":
                 i += 2
                 continue
-            if ch == "}" and i + 1 < n and text[i + 1] == "}":
-                i += 2
-                continue
             if ch == "{":
                 stack.append(["H", verbatim, 1])
                 i += 1
@@ -1096,7 +1093,7 @@ def _csharp_skip_interpolation_stack(text, i, stack):
                 while i + brace_run < n and text[i + brace_run] == "{":
                     brace_run += 1
                 if brace_run >= dollar_run:
-                    stack.append(["RH", dollar_run, 1])
+                    stack.append(["RH", 1])
                     i += dollar_run
                     continue
                 i += brace_run
@@ -1115,20 +1112,16 @@ def _csharp_skip_interpolation_stack(text, i, stack):
             continue
 
         if kind == "RH":
-            brace_count = frame[1]
             opened = _csharp_classify_literal_open(text, i)
             if opened is not None:
                 i = _csharp_push_literal(opened, stack)
                 continue
             if text[i] == "{":
-                frame[2] += 1
+                frame[1] += 1
             elif text[i] == "}":
-                frame[2] -= 1
-                if frame[2] == 0:
-                    close_run = 1
-                    while close_run < brace_count and i + close_run < n and text[i + close_run] == "}":
-                        close_run += 1
-                    i += close_run
+                frame[1] -= 1
+                if frame[1] == 0:
+                    i += 1
                     stack.pop()
                     continue
             i += 1
@@ -1141,8 +1134,6 @@ def _csharp_try_skip_literal(text, i):
     opened = _csharp_classify_literal_open(text, i)
     if opened is None:
         return None
-    if opened[0] == "plain":
-        return opened[1]
     stack = []
     start = _csharp_push_literal(opened, stack)
     return _csharp_skip_interpolation_stack(text, start, stack)
