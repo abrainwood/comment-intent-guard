@@ -11,6 +11,12 @@ pip install ruff==0.16.5 pytest==8.3.4 pyyaml==6.0.2 pytest-xdist==3.6.1 pytest-
 
 Python 3.12 or newer (see the README's Requirements section for why).
 
+The guard runs as a git hook and as a CI step from a plain checkout, with no
+install step of its own, so the runtime files (`comment_intent_guard.py` and
+`hooks/`) keep their imports stdlib-only. The dev tools from the pip line
+above are fine to depend on, since they never ship to a consumer's hook or
+CI run.
+
 ## Running the checks
 
 ```sh

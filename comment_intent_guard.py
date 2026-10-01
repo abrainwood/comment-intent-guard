@@ -717,12 +717,15 @@ def _scan_csharp_comment_spans(spans, lines):
     return blocking, findings
 
 
-_CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Fact", "Theory", "Test", "TestCase", "TestMethod"})
+_CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Test", "TestCase", "TestCaseSource"})
+_CSHARP_TEST_ATTRIBUTE_SUFFIXES = ("Fact", "Theory", "TestMethod")
 
 
 def _is_csharp_test_attribute(name):
-    name = name.rpartition(".")[2]
-    return name in _CSHARP_TEST_ATTRIBUTE_NAMES or name.removesuffix("Attribute") in _CSHARP_TEST_ATTRIBUTE_NAMES
+    name = name.removesuffix("Attribute")
+    if name in _CSHARP_TEST_ATTRIBUTE_NAMES:
+        return True
+    return name.endswith(_CSHARP_TEST_ATTRIBUTE_SUFFIXES)
 
 
 _CSHARP_STOP_BEFORE_NAME = frozenset({";", "{", "}", "="})
@@ -743,8 +746,8 @@ def _csharp_is_doc_opener(text, i):
     return text.startswith("/**", i) and text[i + 3:i + 4] not in ("*", "/")
 
 
-def _csharp_matching_bracket(tokens, k, step):
-    opener, closer = ("[", "]") if step > 0 else ("]", "[")
+def _csharp_matching_bracket(tokens, k, step, brackets=("[", "]")):
+    opener, closer = brackets if step > 0 else brackets[::-1]
     depth = 0
     while 0 <= k < len(tokens):
         if tokens[k].text == opener:
@@ -791,7 +794,8 @@ def _csharp_attribute_names(tokens, sections):
     names = []
     for start, end in sections:
         depth = 0
-        for k in range(start, end):
+        k = start
+        while k < end:
             text = tokens[k].text
             depth += 1 if text in _CSHARP_OPEN_BRACKETS else 0
             depth -= 1 if text in _CSHARP_CLOSE_BRACKETS else 0
@@ -800,31 +804,53 @@ def _csharp_attribute_names(tokens, sections):
                 while dotted + 2 < end and tokens[dotted + 1].text == ".":
                     dotted += 2
                 names.append(tokens[dotted].text.removeprefix("@"))
+                k = dotted
+                if tokens[k + 1].text == "<":
+                    close_k = _csharp_matching_bracket(tokens, k + 1, 1, ("<", ">"))
+                    if close_k is not None:
+                        k = close_k
+            k += 1
     return names
 
 
+_CSHARP_PARAMETER_LIST_CLOSE_FOLLOWERS = frozenset({"{", "=", ";", "where"})
+
+
+def _csharp_name_before_paren(tokens, k):
+    name_k = k - 1
+    if tokens[name_k].text == ">":
+        depth = 0
+        while name_k >= 0:
+            depth += {">": 1, "<": -1}.get(tokens[name_k].text, 0)
+            if depth == 0:
+                break
+            name_k -= 1
+        name_k -= 1
+    if name_k < 0 or not _csharp_is_identifier_start(tokens[name_k].text[0]):
+        return None
+    name = tokens[name_k].text.removeprefix("@")
+    return tokens[name_k]._replace(text=name) if name else None
+
+
 def _csharp_declared_method_name(tokens, k):
+    fallback = None
     while k < len(tokens) and tokens[k].text not in _CSHARP_STOP_BEFORE_NAME:
         if tokens[k].text == "(":
-            name_k = k - 1
-            if tokens[name_k].text == ">":
-                depth = 0
-                while name_k >= 0:
-                    depth += {">": 1, "<": -1}.get(tokens[name_k].text, 0)
-                    if depth == 0:
-                        break
-                    name_k -= 1
-                name_k -= 1
-            if name_k < 0 or not _csharp_is_identifier_start(tokens[name_k].text[0]):
-                return None
-            name = tokens[name_k].text.removeprefix("@")
-            return tokens[name_k]._replace(text=name) if name else None
+            close_k = _csharp_matching_bracket(tokens, k, 1, ("(", ")"))
+            if fallback is None:
+                fallback = _csharp_name_before_paren(tokens, k)
+            if close_k is None:
+                break
+            if close_k + 1 < len(tokens) and tokens[close_k + 1].text in _CSHARP_PARAMETER_LIST_CLOSE_FOLLOWERS:
+                return _csharp_name_before_paren(tokens, k)
+            k = close_k + 1
+            continue
         k += 1
-    return None
+    return fallback
 
 
 def _csharp_test_doc_blocking_violations(tokens, doc_anchors):
-    violations, seen_rows = [], set()
+    violations, seen = [], set()
     for anchor in doc_anchors:
         before = _csharp_attribute_sections_before(tokens, anchor)
         after, declaration_k = _csharp_attribute_sections_after(tokens, anchor)
@@ -832,9 +858,9 @@ def _csharp_test_doc_blocking_violations(tokens, doc_anchors):
         if not any(_is_csharp_test_attribute(n) for n in names):
             continue
         name = _csharp_declared_method_name(tokens, declaration_k)
-        if name is None or name.row in seen_rows:
+        if name is None or (name.row, name.text) in seen:
             continue
-        seen_rows.add(name.row)
+        seen.add((name.row, name.text))
         row = name.row + 1
         violation = _test_docstring_violation(name.text, row, "an XML doc comment", "XML doc comment")
         violations.append((violation, (row, row)))
