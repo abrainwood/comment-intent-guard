@@ -1479,6 +1479,85 @@ def test_findings_for_file_routes_cs_files_to_the_csharp_analyser():
     assert any("date, measurement, or SHA" in message for message, _ in advisory)
 
 
+def test_a_trailing_line_comment_on_a_preprocessor_line_is_still_a_blocking_issue_reference():
+    text = "#if DEBUG\nint x;\n#endif // closes #12\n"
+
+    blocking, _advisory = guard._findings_for_file("/repo/src/Thing.cs", text)
+
+    assert blocking == [(guard._issue_reference_violation("Comment", 2), (3, 3))]
+
+
+def test_a_trailing_line_comment_on_a_preprocessor_line_carries_both_blocking_and_advisory():
+    text = "#pragma warning disable CS0168 // see issue #42, fixed on 2026-01-05\n"
+
+    blocking, advisory = guard._findings_for_file("/repo/src/Thing.cs", text)
+
+    assert blocking == [(guard._issue_reference_violation("Comment", 0), (1, 1))]
+    assert advisory == [(guard._evidence_finding("Comment", 0), (1, 1))]
+
+
+def test_a_trailing_line_comment_on_an_if_directive_is_an_advisory_finding():
+    text = "#if DEBUG // fixed on 2026-01-05\n#endif\n"
+
+    blocking, advisory = guard._findings_for_file("/repo/src/Thing.cs", text)
+
+    assert blocking == []
+    assert advisory == [(guard._evidence_finding("Comment", 0), (1, 1))]
+
+
+def test_a_hash_not_at_the_start_of_a_line_is_not_a_preprocessor_directive():
+    text = "x = #1 /* oops */ // fixed on 2026-01-05\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+    _blocking, advisory = guard._findings_for_file("/repo/src/Thing.cs", text)
+
+    assert spans == [
+        ("block", 0, 0, " oops ", 15),
+        ("line", 0, 0, " fixed on 2026-01-05", None),
+    ]
+    assert advisory == [(guard._evidence_finding("Comment", 0), (1, 1))]
+
+
+@pytest.mark.parametrize(
+    "second_line",
+    ["int y; /// b", '"x" /// b', "x /// b", "} /// b"],
+)
+def test_a_doc_comment_after_real_code_on_its_line_does_not_merge_with_the_doc_above(second_line):
+    text = f"/// a\n{second_line}\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [
+        ("doc", 0, 0, " a", None),
+        ("doc", 1, 1, " b", None),
+    ]
+
+
+def test_a_multi_digit_method_name_is_still_recognised_as_one_identifier():
+    text = "/// d\n[Fact]\npublic void Method1()\n{\n}\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("Method1", 3), (3, 3))]
+
+
+def test_a_never_closing_block_comment_lets_the_next_lines_date_still_be_found():
+    text = "/* x\n// fixed on 2026-01-05\n"
+
+    blocking, advisory = guard._findings_for_file("/repo/src/Thing.cs", text)
+
+    assert blocking == []
+    assert advisory == [(guard._evidence_finding("Comment", 1), (2, 2))]
+
+
+def test_a_lone_form_feed_before_a_doc_line_still_merges_it_with_the_doc_above():
+    text = "/// a\n\f/// b\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("doc", 0, 1, " a\n b", None)]
+
+
 def test_findings_for_file_runs_the_csharp_lexer_exactly_once(monkeypatch):
     text = "int x = 1; // fixed on 2026-01-05\n/// <summary>doc</summary>\n[Fact]\nvoid T() {}\n"
     lex_calls = []
@@ -1650,7 +1729,7 @@ def test_unterminated_regular_string_does_not_swallow_the_next_real_comment():
     assert spans == [("line", 1, 1, " fixed on 2026-01-05", None)]
 
 
-def test_unterminated_block_comment_consumes_the_rest_of_the_file_as_a_single_span():
+def test_unterminated_block_comment_without_a_newline_runs_to_end_of_text():
     text = "/* a // closes #12"
 
     spans = list(guard._csharp_comment_spans(text))

@@ -582,7 +582,9 @@ def _csharp_lex(text):
 
         if ch == "#" and line_start:
             eol = text.find("\n", i)
-            i = n if eol == -1 else eol
+            eol = n if eol == -1 else eol
+            comment_at = text.find("//", i, eol)
+            i = eol if comment_at == -1 else comment_at
             continue
 
         line_start = False
@@ -632,8 +634,6 @@ def _csharp_lex(text):
             spans.append((block_kind, start_li, end_li, text[i + 2:close], close_col))
             row = end_li
             i = close + 2
-            if end_li != start_li:
-                line_has_code = False
             continue
 
         if ch.isalnum() or ch in "_@":
