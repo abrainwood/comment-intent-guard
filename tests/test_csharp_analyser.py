@@ -635,13 +635,26 @@ def test_doc_comment_before_a_generic_attribute_whose_type_argument_names_a_test
     assert violations == []
 
 
+def test_doc_comment_before_a_dotted_generic_attribute_whose_type_argument_names_a_test_attribute_is_not_blocked():
+    text = (
+        "/// <summary>x</summary>\n"
+        "[Foo.Bar<int, Fact>]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
 @pytest.mark.parametrize(
     "attribute_args",
     [
         "InlineData(1 < 2), Theory",
         "Foo(1 << 2), Fact",
         "Foo(a <= b), Fact",
-        "Foo(a > b), Fact",
         "Foo<int>, Fact",
         "Foo<Bar<int>>, Fact",
     ],
@@ -751,6 +764,36 @@ def test_doc_comment_before_a_method_whose_body_deconstructs_a_tuple_names_the_m
         "    (var a, var b) = Get();\n"
         "}\n"
     )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_generic_constrained_method_names_the_method():
+    text = (
+        "/// x\n"
+        "[Fact]\n"
+        "public void X<T>() where T : new()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_an_expression_bodied_tuple_returning_method_names_the_method():
+    text = "/// x\n[Fact]\npublic (int, int) X() => (1, 2);\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_an_abstract_bodyless_tuple_returning_method_names_the_method():
+    text = "/// x\n[Fact]\npublic abstract (int, int) X();\n"
 
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 

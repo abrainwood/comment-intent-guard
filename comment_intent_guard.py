@@ -717,9 +717,7 @@ def _scan_csharp_comment_spans(spans, lines):
     return blocking, findings
 
 
-_CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({
-    "Fact", "Theory", "Test", "TestCase", "TestMethod", "DataTestMethod", "TestCaseSource",
-})
+_CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Test", "TestCase", "TestCaseSource"})
 _CSHARP_TEST_ATTRIBUTE_SUFFIXES = ("Fact", "Theory", "TestMethod")
 
 
@@ -807,7 +805,7 @@ def _csharp_attribute_names(tokens, sections):
                     dotted += 2
                 names.append(tokens[dotted].text.removeprefix("@"))
                 k = dotted
-                if k + 1 < end and tokens[k + 1].text == "<":
+                if tokens[k + 1].text == "<":
                     close_k = _csharp_matching_bracket(tokens, k + 1, 1, ("<", ">"))
                     if close_k is not None:
                         k = close_k
@@ -815,12 +813,12 @@ def _csharp_attribute_names(tokens, sections):
     return names
 
 
-_CSHARP_PARAMETER_LIST_CLOSE_FOLLOWERS = frozenset({"{", "=", ";", ":", "where"})
+_CSHARP_PARAMETER_LIST_CLOSE_FOLLOWERS = frozenset({"{", "=", ";", "where"})
 
 
 def _csharp_name_before_paren(tokens, k):
     name_k = k - 1
-    if name_k >= 0 and tokens[name_k].text == ">":
+    if tokens[name_k].text == ">":
         depth = 0
         while name_k >= 0:
             depth += {">": 1, "<": -1}.get(tokens[name_k].text, 0)
