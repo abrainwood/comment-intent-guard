@@ -583,19 +583,20 @@ def _csharp_lex(text):
         if ch == "#" and line_start:
             eol = text.find("\n", i)
             eol = n if eol == -1 else eol
-            j = i
+            directive = text[i:eol]
+            j = 0
             comment_at = -1
-            while j < eol:
-                literal_end = _csharp_try_skip_literal(text, j)
+            while j < len(directive):
+                literal_end = _csharp_try_skip_literal(directive, j)
                 if literal_end is not None:
-                    j = min(literal_end, eol)
+                    j = literal_end
                     continue
-                if text.startswith("//", j):
+                if directive.startswith("//", j):
                     comment_at = j
                     break
                 j += 1
             if comment_at != -1:
-                spans.append(("line", row, row, text[comment_at + 2:eol], None))
+                spans.append(("line", row, row, directive[comment_at + 2:], None))
             i = eol
             continue
 
@@ -1019,8 +1020,17 @@ def _csharp_classify_literal_open(text, i):
     return None
 
 
+def _csharp_push_literal(opened, stack):
+    if opened[0] == "plain":
+        return opened[1]
+    if opened[0] == "S":
+        stack.append(["S", opened[1]])
+        return opened[2]
+    stack.append(["R", opened[1], opened[2]])
+    return opened[3]
+
+
 def _csharp_skip_interpolation_stack(text, i, stack):
-    # explicit frame stack: hole nesting depth must not be bounded by the call stack
     n = len(text)
     while stack:
         if i >= n:
@@ -1066,14 +1076,7 @@ def _csharp_skip_interpolation_stack(text, i, stack):
                 continue
             opened = _csharp_classify_literal_open(text, i)
             if opened is not None:
-                if opened[0] == "plain":
-                    i = opened[1]
-                elif opened[0] == "S":
-                    stack.append(["S", opened[1]])
-                    i = opened[2]
-                else:
-                    stack.append(["R", opened[1], opened[2]])
-                    i = opened[3]
+                i = _csharp_push_literal(opened, stack)
                 continue
             if text[i] == "{":
                 frame[2] += 1
@@ -1115,14 +1118,7 @@ def _csharp_skip_interpolation_stack(text, i, stack):
             brace_count = frame[1]
             opened = _csharp_classify_literal_open(text, i)
             if opened is not None:
-                if opened[0] == "plain":
-                    i = opened[1]
-                elif opened[0] == "S":
-                    stack.append(["S", opened[1]])
-                    i = opened[2]
-                else:
-                    stack.append(["R", opened[1], opened[2]])
-                    i = opened[3]
+                i = _csharp_push_literal(opened, stack)
                 continue
             if text[i] == "{":
                 frame[2] += 1
@@ -1147,26 +1143,9 @@ def _csharp_try_skip_literal(text, i):
         return None
     if opened[0] == "plain":
         return opened[1]
-    if opened[0] == "S":
-        return _csharp_skip_interpolation_stack(text, opened[2], [["S", opened[1]]])
-    _, quote_run, dollar_run, after_quotes = opened
-    return _csharp_skip_interpolation_stack(text, after_quotes, [["R", quote_run, dollar_run]])
-
-
-def _csharp_skip_raw_interpolation_hole(text, start, brace_count):
-    return _csharp_skip_interpolation_stack(text, start, [["RH", brace_count, 1]])
-
-
-def _csharp_skip_raw_interpolated_string(text, quote_index, quote_run, dollar_run):
-    return _csharp_skip_interpolation_stack(text, quote_index + quote_run, [["R", quote_run, dollar_run]])
-
-
-def _csharp_skip_interpolation_hole(text, start, verbatim):
-    return _csharp_skip_interpolation_stack(text, start + 1, [["H", verbatim, 1]])
-
-
-def _csharp_skip_interpolated_string(text, quote_index, verbatim):
-    return _csharp_skip_interpolation_stack(text, quote_index + 1, [["S", verbatim]])
+    stack = []
+    start = _csharp_push_literal(opened, stack)
+    return _csharp_skip_interpolation_stack(text, start, stack)
 
 
 YAML_COMMENT_RUN_LINE_THRESHOLD = 4

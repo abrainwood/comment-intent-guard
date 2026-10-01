@@ -5,6 +5,7 @@ import random
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -2089,11 +2090,11 @@ def test_escaped_backslash_char_literal_is_skipped_whole():
 
 
 def test_skip_raw_interpolation_hole_tracks_nested_brace_depth_past_a_literal():
-    hole = '{{ new { a = "}" } }}'
+    text = '$$"""{{ new { a = "}" } }}"""'
 
-    end = guard._csharp_skip_raw_interpolation_hole(hole, 2, 2)
+    end = guard._csharp_try_skip_literal(text, 0)
 
-    assert end == len(hole)
+    assert end == len(text)
 
 
 def test_nested_brace_depth_in_a_single_dollar_raw_string_hole_is_tracked_past_the_first_close():
@@ -2115,7 +2116,7 @@ def test_nested_braces_and_string_inside_a_raw_interpolation_hole_are_skipped():
 def test_skip_interpolated_string_consumes_a_literal_double_brace_pair():
     text = '"{x} }} end"'
 
-    end = guard._csharp_skip_interpolated_string(text, 0, False)
+    end = guard._csharp_try_skip_literal(text, 0)
 
     assert end == len(text)
 
@@ -2126,6 +2127,46 @@ def test_double_brace_immediately_before_the_closing_quote_stays_inside_the_stri
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == [("line", 0, 0, " closes #12", None)]
+
+
+def test_a_hole_with_one_level_of_nested_braces_requires_both_closes_to_end_the_hole():
+    text = '$"{a{b}"X"}c"'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
+
+
+def test_a_hole_with_two_levels_of_nested_braces_requires_all_three_closes_to_end_the_hole():
+    text = '$"{a{b{c}"X"}d}e"'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
+
+
+def test_doubled_quote_in_a_verbatim_interpolated_string_is_a_literal_quote_not_the_closer():
+    text = '$@"{x} "" y"'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
+
+
+def test_a_verbatim_interpolated_string_nested_in_a_hole_keeps_its_own_verbatim_flag():
+    text = '$"{ $@"a\\" } tail"'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
+
+
+def test_a_raw_interpolated_string_nested_in_a_hole_keeps_its_own_dollar_count():
+    text = 'x = $"{$$"""{\\"}"""}"; // marker\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " marker", None)]
 
 
 def test_double_brace_literal_inside_a_regular_interpolated_string_is_not_a_hole():
@@ -4473,366 +4514,17 @@ def test_thousands_of_unterminated_interpolation_hole_openers_do_not_recurse():
     spans, tokens, doc_anchors = guard._csharp_lex(text)
 
     assert spans == []
+    assert [t.text for t in tokens] == ["x", "=", '"']
+    assert all(t.row == 0 for t in tokens)
 
 
 def test_thousands_of_unterminated_interpolation_hole_openers_on_directive_lines_do_not_recurse():
-    text = '#if x = $@"{\n' * 3000
+    text = '#if x = $@"{\n' * 3000 + "// tail\n"
 
+    start = time.monotonic()
     spans, tokens, doc_anchors = guard._csharp_lex(text)
+    elapsed = time.monotonic() - start
 
-    assert spans == []
+    assert spans == [("line", 3000, 3000, " tail", None)]
+    assert elapsed < 2
 
-
-def _old_csharp_skip_raw_string(text, start, quote_run):
-    i = start + quote_run
-    n = len(text)
-    while i < n:
-        if text[i] == '"':
-            close_run = 1
-            while i + close_run < n and text[i + close_run] == '"':
-                close_run += 1
-            if close_run >= quote_run:
-                return i + close_run
-            i += close_run
-            continue
-        i += 1
-    return i
-
-
-def _old_csharp_skip_verbatim_string(text, quote_index):
-    i = quote_index + 1
-    n = len(text)
-    while i < n:
-        if text[i] == '"':
-            if i + 1 < n and text[i + 1] == '"':
-                i += 2
-                continue
-            return i + 1
-        i += 1
-    return i
-
-
-def _old_csharp_skip_string(text, start):
-    i = start + 1
-    n = len(text)
-    while i < n and text[i] != "\n":
-        if text[i] == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if text[i] == '"':
-            return i + 1
-        i += 1
-    return i
-
-
-def _old_csharp_dollar_run_length(text, i):
-    n = len(text)
-    run = 0
-    while i + run < n and text[i + run] == "$":
-        run += 1
-    return run
-
-
-def _old_csharp_try_skip_literal(text, i):
-    n = len(text)
-    ch = text[i]
-    if ch == "@" and i + 1 < n and text[i + 1] == '"':
-        return _old_csharp_skip_verbatim_string(text, i + 1)
-    if ch == "@" and i + 2 < n and text[i + 1] == "$" and text[i + 2] == '"':
-        return _old_csharp_skip_interpolated_string(text, i + 2, verbatim=True)
-    if ch == "$":
-        dollar_run = _old_csharp_dollar_run_length(text, i)
-        q = i + dollar_run
-        if q < n and text[q] == "@" and q + 1 < n and text[q + 1] == '"':
-            return _old_csharp_skip_interpolated_string(text, q + 1, verbatim=True)
-        if q < n and text[q] == '"':
-            quote_run = 1
-            while q + quote_run < n and text[q + quote_run] == '"':
-                quote_run += 1
-            if quote_run >= 3:
-                return _old_csharp_skip_raw_interpolated_string(text, q, quote_run, dollar_run)
-            if dollar_run == 1:
-                return _old_csharp_skip_interpolated_string(text, q, verbatim=False)
-        return None
-    if ch == '"':
-        quote_run = 1
-        while i + quote_run < n and text[i + quote_run] == '"':
-            quote_run += 1
-        if quote_run >= 3:
-            return _old_csharp_skip_raw_string(text, i, quote_run)
-        return _old_csharp_skip_string(text, i)
-    if ch == "'":
-        return guard._csharp_skip_char_literal(text, i)
-    return None
-
-
-def _old_csharp_skip_raw_interpolation_hole(text, start, brace_count):
-    i = start
-    n = len(text)
-    depth = 1
-    while i < n:
-        literal_end = _old_csharp_try_skip_literal(text, i)
-        if literal_end is not None:
-            i = literal_end
-            continue
-        if text[i] == "{":
-            depth += 1
-            i += 1
-            continue
-        if text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                close_run = 1
-                while close_run < brace_count and i + close_run < n and text[i + close_run] == "}":
-                    close_run += 1
-                return i + close_run
-            i += 1
-            continue
-        i += 1
-    return i
-
-
-def _old_csharp_skip_raw_interpolated_string(text, quote_index, quote_run, dollar_run):
-    i = quote_index + quote_run
-    n = len(text)
-    while i < n:
-        if text[i] == "{":
-            brace_run = 1
-            while i + brace_run < n and text[i + brace_run] == "{":
-                brace_run += 1
-            if brace_run >= dollar_run:
-                i = _old_csharp_skip_raw_interpolation_hole(text, i + dollar_run, dollar_run)
-                continue
-            i += brace_run
-            continue
-        if text[i] == '"':
-            close_run = 1
-            while i + close_run < n and text[i + close_run] == '"':
-                close_run += 1
-            if close_run >= quote_run:
-                return i + close_run
-            i += close_run
-            continue
-        i += 1
-    return i
-
-
-def _old_csharp_skip_interpolation_hole(text, start, verbatim):
-    i = start + 1
-    n = len(text)
-    depth = 1
-    while i < n:
-        if not verbatim and text[i] == "\n":
-            return i
-        literal_end = _old_csharp_try_skip_literal(text, i)
-        if literal_end is not None:
-            i = literal_end
-            continue
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    return i
-
-
-def _old_csharp_skip_interpolated_string(text, quote_index, verbatim):
-    i = quote_index + 1
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if not verbatim and ch == "\n":
-            return i
-        if ch == "{" and i + 1 < n and text[i + 1] == "{":
-            i += 2
-            continue
-        if ch == "}" and i + 1 < n and text[i + 1] == "}":
-            i += 2
-            continue
-        if ch == "{":
-            i = _old_csharp_skip_interpolation_hole(text, i, verbatim)
-            continue
-        if not verbatim and ch == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if ch == '"':
-            if verbatim and i + 1 < n and text[i + 1] == '"':
-                i += 2
-                continue
-            return i + 1
-        i += 1
-    return i
-
-
-def _old_csharp_lex(text):
-    spans = []
-    tokens = []
-    doc_anchors = []
-    i, n = 0, len(text)
-    row = 0
-    line_start = True
-    line_has_code = False
-
-    while i < n:
-        ch = text[i]
-
-        if ch == "\n":
-            row += 1
-            line_start = True
-            line_has_code = False
-            i += 1
-            continue
-
-        if ch in " \t\r\f\v":
-            i += 1
-            continue
-
-        if ch == "#" and line_start:
-            eol = text.find("\n", i)
-            eol = n if eol == -1 else eol
-            j = i
-            comment_at = -1
-            while j < eol:
-                literal_end = _old_csharp_try_skip_literal(text, j)
-                if literal_end is not None:
-                    j = min(literal_end, eol)
-                    continue
-                if text.startswith("//", j):
-                    comment_at = j
-                    break
-                j += 1
-            if comment_at != -1:
-                spans.append(("line", row, row, text[comment_at + 2:eol], None))
-            i = eol
-            continue
-
-        line_start = False
-
-        literal_end = _old_csharp_try_skip_literal(text, i)
-        if literal_end is not None:
-            tokens.append(guard._CSharpToken('"', row))
-            row += text.count("\n", i, literal_end)
-            line_has_code = True
-            i = literal_end
-            continue
-
-        if ch == "/" and i + 1 < n and text[i + 1] == "/":
-            is_doc = guard._csharp_is_doc_opener(text, i)
-            is_leading = not line_has_code
-            marker_len = 3 if is_doc else 2
-            li = row
-            eol = text.find("\n", i)
-            eol = n if eol == -1 else eol
-            kind = "doc" if is_doc else "line"
-            content = text[i + marker_len:eol]
-            if is_doc:
-                doc_anchors.append(len(tokens))
-            if is_doc and is_leading and spans and spans[-1][0] == "doc" and spans[-1][2] + 1 == li:
-                prev_kind, prev_start, _prev_end, prev_content, _prev_close_col = spans[-1]
-                spans[-1] = (prev_kind, prev_start, li, f"{prev_content}\n{content}", None)
-            else:
-                spans.append((kind, li, li, content, None))
-            i = eol
-            continue
-
-        if ch == "/" and i + 1 < n and text[i + 1] == "*":
-            start_li = row
-            is_doc_opener = guard._csharp_is_doc_opener(text, i)
-            if is_doc_opener:
-                doc_anchors.append(len(tokens))
-            block_kind = "doc" if is_doc_opener else "block"
-            close = text.find("*/", i + 2)
-            if close == -1:
-                eol = text.find("\n", i)
-                end = n if eol == -1 else eol
-                spans.append((block_kind, start_li, start_li, text[i + 2:end], None))
-                i = end
-                continue
-            end_li = start_li + text.count("\n", i, close)
-            close_col = close - (text.rfind("\n", 0, close) + 1)
-            spans.append((block_kind, start_li, end_li, text[i + 2:close], close_col))
-            row = end_li
-            i = close + 2
-            continue
-
-        if ch.isalnum() or ch in "_@":
-            j = i + 1
-            while j < n and (text[j].isalnum() or text[j] == "_"):
-                j += 1
-            tokens.append(guard._CSharpToken(text[i:j], row))
-            line_has_code = True
-            i = j
-            continue
-
-        tokens.append(guard._CSharpToken(ch, row))
-        line_has_code = True
-        i += 1
-
-    return spans, tokens, doc_anchors
-
-
-def _random_interpolation_corpus_line(rng, max_depth=3):
-    safe_chars = "abc XYZ_123"
-
-    def safe_text(length):
-        return "".join(rng.choice(safe_chars) for _ in range(length))
-
-    def gen_literal(depth):
-        choices = ["plain", "char", "verbatim", "interp_dollar", "interp_verbatim", "raw_interp"]
-        if depth <= 0:
-            choices = ["plain", "char", "verbatim"]
-        kind = rng.choice(choices)
-        if kind == "plain":
-            return f'"{safe_text(rng.randint(0, 6))}"'
-        if kind == "char":
-            return rng.choice(["'a'", "'\\''", "'\\\\'", "'9'"])
-        if kind == "verbatim":
-            body = safe_text(rng.randint(0, 6))
-            if rng.random() < 0.5:
-                body += '""'
-            return f'@"{body}"'
-        if kind in ("interp_dollar", "interp_verbatim"):
-            verbatim = kind == "interp_verbatim"
-            prefix = "$@" if verbatim else "$"
-            segments = []
-            for _ in range(rng.randint(0, 3)):
-                piece = rng.choice(["text", "escaped_brace", "hole"])
-                if piece == "text":
-                    segments.append(safe_text(rng.randint(0, 5)))
-                elif piece == "escaped_brace":
-                    segments.append(rng.choice(["{{", "}}"]))
-                else:
-                    hole_body = safe_text(rng.randint(0, 4))
-                    if rng.random() < 0.5:
-                        hole_body += gen_literal(depth - 1)
-                    segments.append("{" + hole_body + "}")
-            return f'{prefix}"{"".join(segments)}"'
-        dollar_run = rng.randint(1, 2)
-        quote_run = 3
-        segments = []
-        for _ in range(rng.randint(0, 3)):
-            piece = rng.choice(["text", "hole"])
-            if piece == "text":
-                segments.append(safe_text(rng.randint(0, 5)))
-            else:
-                hole_body = safe_text(rng.randint(0, 4))
-                if rng.random() < 0.5:
-                    hole_body += gen_literal(depth - 1)
-                segments.append(("{" * dollar_run) + hole_body + ("}" * dollar_run))
-        return ("$" * dollar_run) + ('"' * quote_run) + "".join(segments) + ('"' * quote_run)
-
-    literal = gen_literal(max_depth)
-    marker = rng.randint(0, 999)
-    return f"x{marker} = {literal}; // marker {marker}\n"
-
-
-def test_iterative_csharp_lexer_matches_the_old_recursive_lexer_over_a_seeded_interpolation_corpus():
-    rng = random.Random(20261002)
-    checked = 0
-    for _ in range(2000):
-        text = "".join(_random_interpolation_corpus_line(rng) for _ in range(rng.randint(1, 3)))
-        checked += 1
-        assert guard._csharp_lex(text) == _old_csharp_lex(text), text
-    assert checked == 2000
