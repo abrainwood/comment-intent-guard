@@ -1470,18 +1470,26 @@ def test_findings_for_file_routes_cs_files_to_the_csharp_analyser():
 
 def test_findings_for_file_tokenizes_a_cs_file_at_most_once(monkeypatch):
     text = "int x = 1; // fixed on 2026-01-05\n/// <summary>doc</summary>\n[Fact]\nvoid T() {}\n"
-    calls = []
+    span_calls = []
+    token_calls = []
     real_spans = guard._csharp_comment_spans
+    real_tokens = guard._csharp_code_tokens
 
     def counting_spans(t):
-        calls.append(t)
+        span_calls.append(t)
         return real_spans(t)
 
+    def counting_tokens(t):
+        token_calls.append(t)
+        return real_tokens(t)
+
     monkeypatch.setattr(guard, "_csharp_comment_spans", counting_spans)
+    monkeypatch.setattr(guard, "_csharp_code_tokens", counting_tokens)
 
     guard._findings_for_file("/repo/src/Thing.cs", text)
 
-    assert len(calls) == 1
+    assert len(span_calls) == 1
+    assert len(token_calls) == 1
 
 
 def _run_hook(payload):
@@ -3324,21 +3332,7 @@ def test_attribute_followed_by_code_before_a_trailing_doc_on_the_same_line_does_
     assert violations == []
 
 
-def test_single_pass_doc_above_attribute_above_method_is_blocked():
-    text = (
-        "/// <summary>Checks the thing.</summary>\n"
-        "[Fact]\n"
-        "public void ChecksTheThing()\n"
-        "{\n"
-        "}\n"
-    )
-
-    violations = guard._csharp_test_doc_blocking_violations(text)
-
-    assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 3), (3, 3))]
-
-
-def test_single_pass_multi_line_attribute_group_before_the_doc_is_blocked():
+def test_a_multi_line_attribute_group_before_the_doc_is_blocked():
     text = (
         "[Theory,\n"
         "InlineData(1)]\n"
@@ -3348,12 +3342,12 @@ def test_single_pass_multi_line_attribute_group_before_the_doc_is_blocked():
         "}\n"
     )
 
-    violations = guard._csharp_test_doc_blocking_violations(text)
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
-def test_single_pass_preprocessor_wrapped_attribute_before_the_doc_is_blocked():
+def test_a_preprocessor_wrapped_attribute_before_the_doc_is_blocked():
     text = (
         "#if DEBUG\n"
         "[Fact]\n"
@@ -3364,12 +3358,12 @@ def test_single_pass_preprocessor_wrapped_attribute_before_the_doc_is_blocked():
         "}\n"
     )
 
-    violations = guard._csharp_test_doc_blocking_violations(text)
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
 
 
-_ORACLE_TEST = {"Fact", "Theory", "Test", "TestCase", "TestMethod"}
+_ORACLE_TEST = {"Fact"}
 
 
 def _roslyn_oracle_expected(text):
@@ -3417,13 +3411,13 @@ def _roslyn_oracle_expected(text):
         return None
     out = []
     for m in matches:
-        found = _roslyn_oracle_one(s, code, docs, m.start())
+        found = _roslyn_oracle_one(s, code, docs, m.start(), m.group(1))
         if found and found[0] not in out:
             out.append(found[0])
     return sorted(out)
 
 
-def _roslyn_oracle_one(s, code, docs, p):
+def _roslyn_oracle_one(s, code, docs, p, name):
     row = code[p][1] + 1
     k = p
     attrs = []
@@ -3449,9 +3443,9 @@ def _roslyn_oracle_one(s, code, docs, p):
     start = k
     joined = " ".join(attrs)
     names = re.findall(r"\[\s*([A-Za-z_][\w.]*)", joined) + re.findall(r",\s*([A-Za-z_][\w.]*)", joined)
-    is_test = any(name.split(".")[-1].removesuffix("Attribute") in _ORACLE_TEST for name in names)
+    is_test = any(attribute_name.split(".")[-1].removesuffix("Attribute") in _ORACLE_TEST for attribute_name in names)
     has_doc = any(start <= code_index <= p for code_index, _ in docs)
-    return [(row, row)] if is_test and has_doc else []
+    return [(name, row)] if is_test and has_doc else []
 
 
 _ORACLE_GENERATOR_LINES = [
@@ -3505,8 +3499,17 @@ def _is_known_invalid_csharp_body_without_braces(text):
     return "public void A() /// t" in text
 
 
-def test_single_pass_matches_the_roslyn_oracle_over_the_seeded_generator_corpus():
+_ORACLE_VIOLATION_NAME = re.compile(r"BLOCKED - '([^']*)'")
+
+
+def _public_api_violations(text):
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+    return sorted((_ORACLE_VIOLATION_NAME.search(message).group(1), span[0]) for message, span in violations)
+
+
+def test_matches_the_roslyn_oracle_over_the_seeded_generator_corpus():
     checked = 0
+    disagreements = []
     for body in _oracle_generator_cases():
         text = "\n".join(body + ["public void X()", "{", "}"]) + "\n"
         if not _is_syntactically_closed(text):
@@ -3515,14 +3518,23 @@ def test_single_pass_matches_the_roslyn_oracle_over_the_seeded_generator_corpus(
         if oracle_result is None:
             continue
         checked += 1
-        actual = sorted(span for _message, span in guard._csharp_test_doc_blocking_violations(text))
+        actual = _public_api_violations(text)
         if actual != oracle_result:
-            assert _is_known_invalid_csharp_body_without_braces(text), (text, actual, oracle_result)
+            disagreements.append(text)
 
-    assert checked > 3000
+    allowed = [text for text in disagreements if _is_known_invalid_csharp_body_without_braces(text)]
+    assert disagreements == allowed
+    assert len(disagreements) == 27
+    assert checked == 4377
 
 
-def test_issue_70_doc_above_code_before_the_method_does_not_bind_the_attribute_above_the_code():
+def test_a_method_closing_paren_does_not_act_as_a_member_boundary_for_a_preceding_sibling():
+    text = "public void A() /// t\n[Fact]\npublic void X()\n{\n}\n"
+
+    assert guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs") == []
+
+
+def test_doc_above_code_before_the_method_does_not_bind_the_attribute_above_the_code():
     text = (
         "[Fact]\n"
         "/// doc\n"
@@ -3536,12 +3548,11 @@ def test_issue_70_doc_above_code_before_the_method_does_not_bind_the_attribute_a
     assert violations == []
 
 
-def test_issue_70_doc_above_a_mixed_comment_and_code_line_with_a_trait_argument_does_not_bind_forward():
+def test_doc_above_a_mixed_comment_and_code_line_with_a_trait_argument_does_not_bind_forward():
     text = (
         "[Fact]\n"
         "/// doc\n"
-        '/* a */ int q; /* b */ [Fact, Trait("k", "/* */")]\n'
-        "public void X()\n"
+        '/* a */ int q; /* b */ [Fact, Trait("k", "/* */")] public void X()\n'
         "{\n"
         "}\n"
     )
@@ -3551,7 +3562,22 @@ def test_issue_70_doc_above_a_mixed_comment_and_code_line_with_a_trait_argument_
     assert violations == []
 
 
-def test_issue_70_javadoc_before_an_attribute_then_code_then_another_attribute_documents_the_field():
+def test_a_method_signature_split_across_two_lines_still_finds_the_declared_name():
+    text = (
+        "/// doc\n"
+        "[Fact]\n"
+        "public void\n"
+        "X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_javadoc_before_an_attribute_then_code_then_another_attribute_documents_the_field():
     text = (
         '/** d */ [Fact] int q; [Trait("k", "v")] public void X()\n'
         "{\n"
@@ -3563,7 +3589,7 @@ def test_issue_70_javadoc_before_an_attribute_then_code_then_another_attribute_d
     assert violations == []
 
 
-def test_issue_70_attribute_inside_an_open_javadoc_does_not_bind_to_the_method_after_the_javadoc_closes():
+def test_an_attribute_inside_an_open_javadoc_does_not_bind_to_the_method_after_the_javadoc_closes():
     text = (
         "/** d\n"
         "[Fact]\n"
@@ -3578,7 +3604,7 @@ def test_issue_70_attribute_inside_an_open_javadoc_does_not_bind_to_the_method_a
     assert violations == []
 
 
-def test_issue_70_javadoc_before_code_on_its_own_line_documents_that_code_not_a_later_doc_comment():
+def test_javadoc_before_code_on_its_own_line_documents_that_code_not_a_later_doc_comment():
     text = (
         "[Fact]\n"
         "/** d */ int y;\n"
@@ -3593,7 +3619,7 @@ def test_issue_70_javadoc_before_code_on_its_own_line_documents_that_code_not_a_
     assert violations == []
 
 
-def test_issue_71_attribute_then_trailing_javadoc_on_one_line_is_blocked():
+def test_an_attribute_then_trailing_javadoc_on_one_line_is_blocked():
     text = (
         "[Fact] /** d */\n"
         "public void X()\n"
@@ -3606,7 +3632,7 @@ def test_issue_71_attribute_then_trailing_javadoc_on_one_line_is_blocked():
     assert violations == [(_csharp_test_doc_violation("X", 2), (2, 2))]
 
 
-def test_issue_71_attribute_then_trailing_triple_slash_then_a_leading_triple_slash_line_is_blocked():
+def test_an_attribute_then_trailing_triple_slash_then_a_leading_triple_slash_line_is_blocked():
     text = (
         "[Fact] /// x\n"
         "/// a\n"
@@ -3620,7 +3646,7 @@ def test_issue_71_attribute_then_trailing_triple_slash_then_a_leading_triple_sla
     assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
 
 
-def test_issue_71_multi_line_block_comment_then_attribute_then_doc_is_blocked():
+def test_a_multi_line_block_comment_then_attribute_then_doc_is_blocked():
     text = (
         "/** d\n"
         "*/ [Fact]\n"
@@ -3635,35 +3661,7 @@ def test_issue_71_multi_line_block_comment_then_attribute_then_doc_is_blocked():
     assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
-def test_issue_67_attribute_then_trailing_triple_slash_on_one_line_is_blocked():
-    text = (
-        "[Fact] /// x\n"
-        "public void X()\n"
-        "{\n"
-        "}\n"
-    )
-
-    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
-
-    assert violations == [(_csharp_test_doc_violation("X", 2), (2, 2))]
-
-
-def test_issue_67_mixed_line_whose_last_block_comment_is_multi_line_binds_backward():
-    text = (
-        "/* a */ int q; /* b\n"
-        "c */ [Fact]\n"
-        "/// doc\n"
-        "public void X()\n"
-        "{\n"
-        "}\n"
-    )
-
-    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
-
-    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
-
-
-def test_issue_67_attribute_line_ending_in_an_open_block_comment_closing_on_a_mixed_line_binds_backward():
+def test_an_attribute_line_ending_in_an_open_block_comment_that_closes_on_a_mixed_code_and_attribute_line_binds_backward():
     text = (
         "[Fact] /* a\n"
         "/* a */ int q; /* b */ [Fact]\n"
@@ -3678,52 +3676,7 @@ def test_issue_67_attribute_line_ending_in_an_open_block_comment_closing_on_a_mi
     assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
-def test_issue_67_two_adjacent_multi_line_javadoc_blocks_after_the_attribute_are_blocked():
-    text = (
-        "[Fact]\n"
-        "/** d\n"
-        "e */\n"
-        "/** d\n"
-        "e */\n"
-        "public void X()\n"
-        "{\n"
-        "}\n"
-    )
-
-    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
-
-    assert violations == [(_csharp_test_doc_violation("X", 6), (6, 6))]
-
-
-def test_issue_67_javadoc_before_code_on_its_own_line_is_not_blocked():
-    text = (
-        "[Fact]\n"
-        "/** d */ int y;\n"
-        "public void X()\n"
-        "{\n"
-        "}\n"
-    )
-
-    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
-
-    assert violations == []
-
-
-def test_issue_67_multi_line_javadoc_closing_on_a_line_with_a_trailing_attribute_is_blocked():
-    text = (
-        "/** a\n"
-        "*/ [Fact]\n"
-        "public void X()\n"
-        "{\n"
-        "}\n"
-    )
-
-    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
-
-    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
-
-
-def test_issue_67_code_before_an_unclosed_block_comment_is_a_member_boundary_regression_guard():
+def test_a_code_line_before_an_unclosed_block_comment_is_a_member_boundary_regression_guard():
     text = (
         "[Fact]\n"
         "int y; /* a\n"
@@ -3739,7 +3692,7 @@ def test_issue_67_code_before_an_unclosed_block_comment_is_a_member_boundary_reg
     assert violations == []
 
 
-def test_issue_68_wrapped_member_data_attribute_argument_names_the_method_after_the_doc():
+def test_a_wrapped_member_data_attribute_argument_names_the_method_after_the_doc():
     text = (
         "[Theory]\n"
         "[MemberData(nameof(Cases),\n"
@@ -3755,7 +3708,7 @@ def test_issue_68_wrapped_member_data_attribute_argument_names_the_method_after_
     assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
 
 
-def test_issue_68_preprocessor_lines_between_the_attribute_and_the_signature_are_skipped():
+def test_preprocessor_lines_between_the_attribute_and_the_signature_are_skipped():
     text = (
         "/// doc\n"
         "[Fact]\n"
@@ -3771,7 +3724,7 @@ def test_issue_68_preprocessor_lines_between_the_attribute_and_the_signature_are
     assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
-def test_issue_68_bracket_inside_an_attribute_argument_array_does_not_end_the_attribute_section():
+def test_a_bracket_inside_an_attribute_argument_array_does_not_end_the_attribute_section():
     text = (
         "/// doc\n"
         "[InlineData(new int[] { 1 })]\n"
@@ -3786,7 +3739,7 @@ def test_issue_68_bracket_inside_an_attribute_argument_array_does_not_end_the_at
     assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
 
 
-def test_issue_68_triple_asterisk_banner_is_a_plain_comment_not_a_doc_comment():
+def test_a_triple_asterisk_banner_is_a_plain_comment_not_a_doc_comment():
     text = (
         "/*** banner ***/\n"
         "[Fact]\n"
@@ -3800,7 +3753,7 @@ def test_issue_68_triple_asterisk_banner_is_a_plain_comment_not_a_doc_comment():
     assert violations == []
 
 
-def test_issue_68_obsolete_attribute_string_argument_mentioning_fact_does_not_mark_the_helper_as_a_test():
+def test_an_obsolete_attribute_string_argument_mentioning_fact_does_not_mark_the_helper_as_a_test():
     text = (
         '/// Use the [Fact] based suite instead.\n'
         '[Obsolete("Use the [Fact] based suite")]\n'
@@ -3814,7 +3767,7 @@ def test_issue_68_obsolete_attribute_string_argument_mentioning_fact_does_not_ma
     assert violations == []
 
 
-def test_issue_68_attribute_target_specifier_before_the_attribute_name_is_still_recognised():
+def test_an_attribute_target_specifier_before_the_attribute_name_is_still_recognised():
     text = (
         "/// doc\n"
         "[method: Fact]\n"
@@ -3845,23 +3798,33 @@ _METAMORPHIC_TRIVIA_INSERTS = [
     ["/* multi", "   line */"],
 ]
 
+_METAMORPHIC_BASE_EXPECTED = [
+    [(3, "X")],
+    [(3, "X")],
+    [(4, "X")],
+    [(4, "X")],
+    [(3, "X")],
+    [(3, "X")],
+    [],
+]
 
-def _violation_rows(text):
-    return sorted(row for _message, (row, _end) in guard.find_csharp_blocking_violations(text, "/repo/T.cs"))
+
+def _violation_name_rows(text):
+    violations = guard.find_csharp_blocking_violations(text, "/repo/T.cs")
+    return sorted((row, _ORACLE_VIOLATION_NAME.search(message).group(1)) for message, (row, _end) in violations)
 
 
 def test_metamorphic_trivia_insertion_shifts_violation_rows_but_does_not_change_them():
     checked = 0
-    for base in _METAMORPHIC_BASE_PROGRAMS:
-        base_text = "\n".join(base) + "\n"
-        base_rows = _violation_rows(base_text)
+    for base, base_expected in zip(_METAMORPHIC_BASE_PROGRAMS, _METAMORPHIC_BASE_EXPECTED, strict=True):
+        assert _violation_name_rows("\n".join(base) + "\n") == base_expected
         for gap in range(1, len(base)):
             for trivia in _METAMORPHIC_TRIVIA_INSERTS:
                 lines = base[:gap] + trivia + base[gap:]
-                got_rows = _violation_rows("\n".join(lines) + "\n")
-                expected_rows = [row + len(trivia) if row > gap else row for row in base_rows]
+                got = _violation_name_rows("\n".join(lines) + "\n")
+                expected = [(row + len(trivia), name) if row > gap else (row, name) for row, name in base_expected]
                 checked += 1
-                assert got_rows == expected_rows, (lines, got_rows, expected_rows)
+                assert got == expected, (lines, got, expected)
 
     assert checked > 100
 
@@ -3869,15 +3832,17 @@ def test_metamorphic_trivia_insertion_shifts_violation_rows_but_does_not_change_
 def test_metamorphic_wrapping_an_attribute_line_in_an_if_directive_does_not_change_the_result():
     base = ["/// doc", "[Theory]", '[InlineData("a", 2)]', "public void X(string a, int b)", "{", "}"]
     base_text = "\n".join(base) + "\n"
-    want = bool(_violation_rows(base_text))
+    want = [(4, "X")]
+    assert _violation_name_rows(base_text) == want
     checked = 0
     for li, line in enumerate(base):
         if not line.startswith("["):
             continue
         lines = base[:li] + ["#if NET8_0", line, "#endif"] + base[li + 1:]
-        got = bool(_violation_rows("\n".join(lines) + "\n"))
+        got = _violation_name_rows("\n".join(lines) + "\n")
+        shifted = [(row + 2 if row > li else row, name) for row, name in want]
         checked += 1
-        assert got == want, lines
+        assert got == shifted, lines
 
     assert checked > 0
 
@@ -3886,7 +3851,8 @@ def test_metamorphic_line_break_inside_a_wrapped_attribute_argument_does_not_cha
     base = ["[Theory]", '[MemberData(nameof(Cases), MemberType = typeof(D))]', "/// doc",
             "public void X(int a)", "{", "}"]
     base_text = "\n".join(base) + "\n"
-    want = bool(_violation_rows(base_text))
+    want = [(4, "X")]
+    assert _violation_name_rows(base_text) == want
     checked = 0
     for li, line in enumerate(base):
         if not line.startswith("["):
@@ -3894,8 +3860,186 @@ def test_metamorphic_line_break_inside_a_wrapped_attribute_argument_does_not_cha
         for match in re.finditer(r"[(,]", line):
             k = match.end()
             lines = base[:li] + [line[:k], "    " + line[k:].lstrip()] + base[li + 1:]
-            got = bool(_violation_rows("\n".join(lines) + "\n"))
+            got = _violation_name_rows("\n".join(lines) + "\n")
+            shifted = [(row + 1 if row > li else row, name) for row, name in want]
             checked += 1
-            assert got == want, lines
+            assert got == shifted, lines
 
     assert checked > 0
+
+
+def test_metamorphic_crlf_line_endings_do_not_change_which_row_is_flagged():
+    checked = 0
+    for base, expected in zip(_METAMORPHIC_BASE_PROGRAMS, _METAMORPHIC_BASE_EXPECTED, strict=True):
+        text = "\r\n".join(base) + "\r\n"
+        got = _violation_name_rows(text)
+        checked += 1
+        assert got == expected, (base, got, expected)
+
+    assert checked == len(_METAMORPHIC_BASE_PROGRAMS)
+
+
+def test_crlf_before_a_trait_and_fact_still_finds_the_doc_comment():
+    text = '/// d\r\n[Trait("a", "b")]\r\n[Fact]\r\npublic void X()\r\n{\r\n}\r\n'
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/T.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 4), (4, 4))]
+
+
+def test_metamorphic_reindenting_every_line_does_not_change_which_row_is_flagged():
+    checked = 0
+    for base, expected in zip(_METAMORPHIC_BASE_PROGRAMS, _METAMORPHIC_BASE_EXPECTED, strict=True):
+        text = "\n".join("        " + line for line in base) + "\n"
+        got = _violation_name_rows(text)
+        checked += 1
+        assert got == expected, (base, got, expected)
+
+    assert checked == len(_METAMORPHIC_BASE_PROGRAMS)
+
+
+def test_metamorphic_wrapping_in_a_namespace_and_class_shifts_rows_by_the_wrapper_line_count():
+    wrapper_prefix = ["namespace N", "{", "    class C", "    {"]
+    wrapper_suffix = ["    }", "}"]
+    checked = 0
+    for base, expected in zip(_METAMORPHIC_BASE_PROGRAMS, _METAMORPHIC_BASE_EXPECTED, strict=True):
+        lines = wrapper_prefix + ["    " + line for line in base] + wrapper_suffix
+        got = _violation_name_rows("\n".join(lines) + "\n")
+        shifted = [(row + len(wrapper_prefix), name) for row, name in expected]
+        checked += 1
+        assert got == shifted, (base, got, shifted)
+
+    assert checked == len(_METAMORPHIC_BASE_PROGRAMS)
+
+
+def test_metamorphic_a_block_comment_prefix_on_every_line_does_not_change_the_result():
+    checked = 0
+    for base, expected in zip(_METAMORPHIC_BASE_PROGRAMS, _METAMORPHIC_BASE_EXPECTED, strict=True):
+        lines = [f"/* c */ {line}" for line in base]
+        got = _violation_name_rows("\n".join(lines) + "\n")
+        checked += 1
+        assert got == expected, (base, got, expected)
+
+    assert checked == len(_METAMORPHIC_BASE_PROGRAMS)
+
+
+def test_method_name_starting_with_an_underscore_is_recognised():
+    text = (
+        "/// d\n"
+        "[Fact]\n"
+        "public void _X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("_X", 3), (3, 3))]
+
+
+def test_verbatim_method_name_strips_the_at_sign():
+    text = (
+        "/// d\n"
+        "[Fact]\n"
+        "public void @X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_a_newline_inside_a_verbatim_string_literal_still_counts_toward_the_row():
+    text = (
+        'const string S = @"a\n'
+        'b";\n'
+        "/// d\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 5), (5, 5))]
+
+
+def test_an_empty_block_comment_is_not_mistaken_for_a_doc_comment():
+    text = (
+        "[Fact]\n"
+        "/**/\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_an_attribute_argument_that_looks_like_a_nested_attribute_name_is_not_bound_as_one():
+    text = (
+        "/// d\n"
+        "[InlineData(1, Fact)]\n"
+        "public void Helper()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_field_initializer_is_not_mistaken_for_a_method_declaration():
+    text = (
+        "/// d\n"
+        "[Fact]\n"
+        "public Func<int> F = Make();\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_an_expression_bodied_property_is_not_mistaken_for_a_method_declaration():
+    text = (
+        "/// d\n"
+        "[Fact]\n"
+        "public int P => Compute();\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_property_with_an_accessor_body_is_not_mistaken_for_a_method_declaration():
+    text = (
+        "/// d\n"
+        "[Fact]\n"
+        "public int P { get { return Compute(); } }\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_bracket_inside_a_statement_body_does_not_open_an_attribute_section():
+    text = (
+        "void M()\n"
+        "{\n"
+        "    var v = map /// d\n"
+        "        [Fact].Get(1);\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []

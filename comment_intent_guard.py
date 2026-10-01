@@ -678,8 +678,11 @@ def _is_csharp_test_attribute(name):
     return name in _CSHARP_TEST_ATTRIBUTE_NAMES or name.removesuffix("Attribute") in _CSHARP_TEST_ATTRIBUTE_NAMES
 
 
-_CSHARP_STOP_BEFORE_NAME = frozenset({";", "{", "}", "=", "=>"})
+_CSHARP_STOP_BEFORE_NAME = frozenset({";", "{", "}", "="})
 _CSHARP_MEMBER_BOUNDARY = frozenset({";", "{", "}", "]"})
+_CSHARP_OPEN_BRACKETS = frozenset({"(", "["})
+_CSHARP_CLOSE_BRACKETS = frozenset({")", "]"})
+_CSHARP_ATTRIBUTE_NAME_LEAD = frozenset({"[", ",", ":"})
 
 
 class _CSharpToken(NamedTuple):
@@ -738,9 +741,8 @@ def _csharp_code_tokens(text):
             tokens.append(_CSharpToken(text[i:j], row))
             i = j
             continue
-        width = 2 if text.startswith("=>", i) else 1
-        tokens.append(_CSharpToken(text[i:i + width], row))
-        i += width
+        tokens.append(_CSharpToken(ch, row))
+        i += 1
     return tokens, doc_anchors
 
 
@@ -784,19 +786,23 @@ def _csharp_attribute_sections_after(tokens, k):
     return sections, k
 
 
+def _csharp_is_identifier_start(ch):
+    return ch.isalpha() or ch in "_@"
+
+
 def _csharp_attribute_names(tokens, sections):
     names = []
     for start, end in sections:
         depth = 0
         for k in range(start, end):
             text = tokens[k].text
-            depth += 1 if text in "([" else 0
-            depth -= 1 if text in ")]" else 0
-            if depth == 1 and tokens[k - 1].text in "[,:" and (text[0].isalpha() or text[0] == "_"):
+            depth += 1 if text in _CSHARP_OPEN_BRACKETS else 0
+            depth -= 1 if text in _CSHARP_CLOSE_BRACKETS else 0
+            if depth == 1 and tokens[k - 1].text in _CSHARP_ATTRIBUTE_NAME_LEAD and _csharp_is_identifier_start(text[0]):
                 dotted = k
                 while dotted + 2 < end and tokens[dotted + 1].text == ".":
                     dotted += 2
-                names.append(tokens[dotted].text)
+                names.append(tokens[dotted].text.removeprefix("@"))
     return names
 
 
@@ -812,7 +818,9 @@ def _csharp_declared_method_name(tokens, k):
                         break
                     name_k -= 1
                 name_k -= 1
-            return tokens[name_k] if name_k >= 0 and tokens[name_k].text[0].isalpha() else None
+            if name_k < 0 or not _csharp_is_identifier_start(tokens[name_k].text[0]):
+                return None
+            return tokens[name_k]._replace(text=tokens[name_k].text.removeprefix("@"))
         k += 1
     return None
 
