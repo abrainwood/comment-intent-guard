@@ -557,9 +557,7 @@ def find_blocking_violations(text, file_path):
     return violations
 
 
-def _csharp_comment_spans(text, trailing_doc_starts=None):
-    if trailing_doc_starts is None:
-        trailing_doc_starts = set()
+def _csharp_comment_spans(text):
     spans = []
     i, n = 0, len(text)
     line, counted_up_to = 0, 0
@@ -587,8 +585,6 @@ def _csharp_comment_spans(text, trailing_doc_starts=None):
             eol = n if eol == -1 else eol
             kind = "doc" if is_doc else "line"
             content = text[i + marker_len:eol]
-            if is_doc and line_has_code:
-                trailing_doc_starts.add(li)
             if is_doc and is_leading and spans and spans[-1][0] == "doc" and spans[-1][2] + 1 == li:
                 prev_kind, prev_start, _prev_end, prev_content, _prev_close_col = spans[-1]
                 spans[-1] = (prev_kind, prev_start, li, f"{prev_content}\n{content}", None)
@@ -605,8 +601,6 @@ def _csharp_comment_spans(text, trailing_doc_starts=None):
                 i + 2 < n and text[i + 2] == "*" and not (i + 3 < n and text[i + 3] in ("*", "/"))
             )
             block_kind = "doc" if is_javadoc else "block"
-            if block_kind == "doc" and line_has_code:
-                trailing_doc_starts.add(start_li)
             close_col = None
             if close != -1:
                 close_col = close - (text.rfind("\n", 0, close) + 1)
@@ -677,8 +671,6 @@ def _scan_csharp_comment_spans(spans, lines):
 
 
 _CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Fact", "Theory", "Test", "TestCase", "TestMethod"})
-_CSHARP_ATTRIBUTE_NAME_RE = re.compile(r"[\[,]\s*([A-Za-z_][A-Za-z0-9_.]*)")
-_CSHARP_METHOD_NAME_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:<[^>]*>)?\s*\(")
 
 
 def _is_csharp_test_attribute(name):
@@ -686,378 +678,161 @@ def _is_csharp_test_attribute(name):
     return name in _CSHARP_TEST_ATTRIBUTE_NAMES or name.removesuffix("Attribute") in _CSHARP_TEST_ATTRIBUTE_NAMES
 
 
-def _csharp_skip_attribute_bracket_group(line, i):
-    n = len(line)
-    if i >= n or line[i] != "[":
-        return None
-    k = i + 1
-    while k < n:
-        literal_end = _csharp_try_skip_literal(line, k)
-        if literal_end is not None:
-            k = literal_end
+_CSHARP_STOP_BEFORE_NAME = frozenset({";", "{", "}", "=", "=>"})
+_CSHARP_MEMBER_BOUNDARY = frozenset({";", "{", "}", "]"})
+
+
+class _CSharpToken(NamedTuple):
+    text: str
+    row: int
+
+
+def _csharp_is_doc_opener(text, i):
+    if text.startswith("///", i):
+        return not text.startswith("////", i)
+    return text.startswith("/**", i) and text[i + 3:i + 4] not in ("*", "/")
+
+
+def _csharp_code_tokens(text):
+    tokens, doc_anchors = [], []
+    i, n, row, line_start = 0, len(text), 0, True
+    while i < n:
+        ch = text[i]
+        if ch == "\n":
+            row, line_start, i = row + 1, True, i + 1
             continue
-        if line[k] == "]":
-            return k + 1
+        if ch in " \t\r\f\v":
+            i += 1
+            continue
+        if ch == "#" and line_start:
+            eol = text.find("\n", i)
+            i = n if eol == -1 else eol
+            continue
+        line_start = False
+        if text.startswith("//", i) or text.startswith("/*", i):
+            if _csharp_is_doc_opener(text, i):
+                doc_anchors.append(len(tokens))
+            if text[i + 1] == "/":
+                eol = text.find("\n", i)
+                i = n if eol == -1 else eol
+                continue
+            close = text.find("*/", i + 2)
+            if close == -1:
+                eol = text.find("\n", i)
+                i = n if eol == -1 else eol
+                continue
+            end = close + 2
+            row += text.count("\n", i, end)
+            i = end
+            continue
+        literal_end = _csharp_try_skip_literal(text, i)
+        if literal_end is not None:
+            tokens.append(_CSharpToken('"', row))
+            row += text.count("\n", i, literal_end)
+            i = literal_end
+            continue
+        if ch.isalnum() or ch in "_@":
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            tokens.append(_CSharpToken(text[i:j], row))
+            i = j
+            continue
+        width = 2 if text.startswith("=>", i) else 1
+        tokens.append(_CSharpToken(text[i:i + width], row))
+        i += width
+    return tokens, doc_anchors
+
+
+def _csharp_matching_bracket(tokens, k, step):
+    opener, closer = ("[", "]") if step > 0 else ("]", "[")
+    depth = 0
+    while 0 <= k < len(tokens):
+        if tokens[k].text == opener:
+            depth += 1
+        elif tokens[k].text == closer:
+            depth -= 1
+            if depth == 0:
+                return k
+        k += step
+    return None
+
+
+def _csharp_opens_attribute_section(tokens, k):
+    return tokens[k].text == "[" and (k == 0 or tokens[k - 1].text in _CSHARP_MEMBER_BOUNDARY)
+
+
+def _csharp_attribute_sections_before(tokens, k):
+    sections = []
+    while k > 0 and tokens[k - 1].text == "]":
+        open_k = _csharp_matching_bracket(tokens, k - 1, -1)
+        if open_k is None or not _csharp_opens_attribute_section(tokens, open_k):
+            break
+        sections.append((open_k, k))
+        k = open_k
+    return sections
+
+
+def _csharp_attribute_sections_after(tokens, k):
+    sections = []
+    while k < len(tokens) and _csharp_opens_attribute_section(tokens, k):
+        close_k = _csharp_matching_bracket(tokens, k, 1)
+        if close_k is None:
+            break
+        sections.append((k, close_k + 1))
+        k = close_k + 1
+    return sections, k
+
+
+def _csharp_attribute_names(tokens, sections):
+    names = []
+    for start, end in sections:
+        depth = 0
+        for k in range(start, end):
+            text = tokens[k].text
+            depth += 1 if text in "([" else 0
+            depth -= 1 if text in ")]" else 0
+            if depth == 1 and tokens[k - 1].text in "[,:" and (text[0].isalpha() or text[0] == "_"):
+                dotted = k
+                while dotted + 2 < end and tokens[dotted + 1].text == ".":
+                    dotted += 2
+                names.append(tokens[dotted].text)
+    return names
+
+
+def _csharp_declared_method_name(tokens, k):
+    while k < len(tokens) and tokens[k].text not in _CSHARP_STOP_BEFORE_NAME:
+        if tokens[k].text == "(":
+            name_k = k - 1
+            if tokens[name_k].text == ">":
+                depth = 0
+                while name_k >= 0:
+                    depth += {">": 1, "<": -1}.get(tokens[name_k].text, 0)
+                    if depth == 0:
+                        break
+                    name_k -= 1
+                name_k -= 1
+            return tokens[name_k] if name_k >= 0 and tokens[name_k].text[0].isalpha() else None
         k += 1
     return None
 
 
-def _csharp_find_block_comment_close(lines, li):
-    li += 1
-    while li < len(lines):
-        idx = lines[li].find("*/")
-        if idx != -1:
-            return li, lines[li][idx + 2:]
-        li += 1
-    return None
-
-
-def _csharp_strip_trailing_comments(lines, li, text):
-    out = []
-    last = 0
-    i, n = 0, len(text)
-    while i < n:
-        literal_end = _csharp_try_skip_literal(text, i)
-        if literal_end is not None:
-            i = literal_end
+def _csharp_test_doc_blocking_violations(text):
+    tokens, doc_anchors = _csharp_code_tokens(text)
+    violations, seen_rows = [], set()
+    for anchor in doc_anchors:
+        before = _csharp_attribute_sections_before(tokens, anchor)
+        after, declaration_k = _csharp_attribute_sections_after(tokens, anchor)
+        names = _csharp_attribute_names(tokens, before + after)
+        if not any(_is_csharp_test_attribute(n) for n in names):
             continue
-        if text[i] == "/" and i + 1 < n and text[i + 1] == "/":
-            out.append(text[last:i])
-            return li, "".join(out)
-        if text[i] == "/" and i + 1 < n and text[i + 1] == "*":
-            close = text.find("*/", i + 2)
-            if close != -1:
-                out.append(text[last:i])
-                last = close + 2
-                i = close + 2
-                continue
-            found = _csharp_find_block_comment_close(lines, li)
-            if found is None:
-                out.append(text[last:i])
-                return li, "".join(out)
-            li, text = found
-            n = len(text)
-            i, last = 0, 0
+        name = _csharp_declared_method_name(tokens, declaration_k)
+        if name is None or name.row in seen_rows:
             continue
-        i += 1
-    out.append(text[last:i])
-    return li, "".join(out)
-
-
-def _csharp_trailing_attribute_group(lines, li, text, limit=None):
-    projected_li, projected = _csharp_strip_trailing_comments(lines, li, text)
-    start = projected.find("[")
-    while start != -1:
-        candidate = _csharp_attribute_groups_from(lines, projected_li, projected[start:], limit)
-        if candidate is not None and candidate[2] == "":
-            return candidate
-        start = projected.find("[", start + 1)
-    return None
-
-
-def _csharp_skip_comments(lines, li, text, limit=None):
-    rest = text.strip()
-    while True:
-        if rest.startswith("//"):
-            return li, ""
-        if not rest.startswith("/*"):
-            if rest == "" and limit is not None:
-                peek = li + 1
-                while peek <= limit and not lines[peek].strip():
-                    peek += 1
-                if peek <= limit and lines[peek].lstrip(" \t").startswith("/*"):
-                    li = peek
-                    rest = lines[li].strip()
-                    continue
-            return li, rest
-        close = rest.find("*/", 2)
-        if close != -1:
-            rest = rest[close + 2:].strip()
-            continue
-        found = _csharp_find_block_comment_close(lines, li)
-        if found is None:
-            return li, ""
-        li, after = found
-        rest = after.strip()
-
-
-def _csharp_attribute_groups_from(lines, li, tail, limit=None):
-    groups = []
-    while True:
-        end = _csharp_skip_attribute_bracket_group(tail, 0)
-        if end is None:
-            break
-        groups.append(tail[:end])
-        li, tail = _csharp_skip_comments(lines, li, tail[end:], limit)
-    if not groups:
-        return None
-    return (" ".join(groups), li, tail)
-
-
-def _csharp_line_attribute_group(lines, li, limit=None):
-    return _csharp_attribute_groups_from(lines, li, lines[li].lstrip(" \t"), limit)
-
-
-def _csharp_consume_attribute_line(lines, li):
-    group = _csharp_line_attribute_group(lines, li)
-    if group is None:
-        return None
-    attrs_text, li, rest = group
-    names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
-    return names, li, rest
-
-
-def _csharp_leading_block_remainder(spans, lines, li):
-    if not lines[li].lstrip(" \t").startswith("/*"):
-        return None
-    if not any(s[0] in ("block", "doc") and s[1] == li for s in spans):
-        return None
-    end_li, rest = _csharp_skip_comments(lines, li, lines[li])
-    return li, end_li, rest
-
-
-def _csharp_is_line_comment(stripped):
-    return stripped.startswith("//")
-
-
-def _csharp_walk_past_attribute_lines(spans, lines, start_li):
-    li = start_li
-    attribute_names = []
-    while li < len(lines):
-        stripped = lines[li].strip()
-        if not stripped or _csharp_is_line_comment(stripped):
-            li += 1
-            continue
-        leading_block = _csharp_leading_block_remainder(spans, lines, li)
-        if leading_block is not None:
-            _start_li, end_li, tail = leading_block
-            if tail == "":
-                li = end_li + 1
-                continue
-            group = _csharp_attribute_groups_from(lines, end_li, tail)
-            if group is None:
-                return end_li, attribute_names, tail
-            attrs_text, resolved_li, rest = group
-            attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text))
-            if rest != "":
-                return resolved_li, attribute_names, rest
-            li = resolved_li + 1
-            continue
-        consumed = _csharp_consume_attribute_line(lines, li)
-        if consumed is None:
-            return li, attribute_names, lines[li]
-        names, resolved_li, rest = consumed
-        attribute_names.extend(names)
-        if rest != "":
-            return resolved_li, attribute_names, rest
-        li = resolved_li + 1
-    return li, attribute_names, None
-
-
-def _csharp_strip_attribute_bracket_groups(text):
-    out = []
-    last = 0
-    i, n = 0, len(text)
-    while i < n:
-        literal_end = _csharp_try_skip_literal(text, i)
-        if literal_end is not None:
-            i = literal_end
-            continue
-        if text[i] == "[":
-            end = _csharp_skip_attribute_bracket_group(text, i)
-            if end is not None:
-                out.append(text[last:i])
-                last = end
-                i = end
-                continue
-        i += 1
-    out.append(text[last:i])
-    return "".join(out)
-
-
-def _csharp_method_signature_after_attribute_lines(spans, lines, start_li):
-    li, attribute_names, rest = _csharp_walk_past_attribute_lines(spans, lines, start_li)
-    if rest is None:
-        return None, attribute_names
-    match = _CSHARP_METHOD_NAME_RE.search(_csharp_strip_attribute_bracket_groups(rest))
-    return ((match.group(1), li + 1) if match else None), attribute_names
-
-
-def _csharp_doc_span_trailing_text(lines, end_li, close_col):
-    if close_col is None:
-        return ""
-    return lines[end_li][close_col + 2:]
-
-
-def _csharp_method_signature_after_doc_close(spans, lines, end_li, close_col):
-    trailing = _csharp_doc_span_trailing_text(lines, end_li, close_col).lstrip(" \t")
-    if trailing == "":
-        return _csharp_method_signature_after_attribute_lines(spans, lines, end_li + 1)
-    skip_li, rest_after_comments = _csharp_skip_comments(lines, end_li, trailing)
-    if rest_after_comments == "":
-        return _csharp_method_signature_after_attribute_lines(spans, lines, skip_li + 1)
-    group = _csharp_attribute_groups_from(lines, skip_li, rest_after_comments)
-    if group is None:
-        return None, []
-    attrs_text, resolved_li, rest = group
-    attribute_names = _CSHARP_ATTRIBUTE_NAME_RE.findall(attrs_text)
-    if rest != "":
-        match = _CSHARP_METHOD_NAME_RE.search(_csharp_strip_attribute_bracket_groups(rest))
-        return ((match.group(1), resolved_li + 1) if match else None), attribute_names
-    found, more_names = _csharp_method_signature_after_attribute_lines(spans, lines, resolved_li + 1)
-    return found, attribute_names + more_names
-
-
-def _csharp_test_method_after_doc_block(spans, lines, end_li, close_col):
-    found, attribute_names = _csharp_method_signature_after_doc_close(spans, lines, end_li, close_col)
-    saw_test_attribute = any(_is_csharp_test_attribute(n) for n in attribute_names)
-    return found if saw_test_attribute else None
-
-
-def _csharp_enclosing_block_span(spans, li):
-    return next((s for s in spans if s[0] == "block" and s[1] < li <= s[2]), None)
-
-
-def _csharp_block_comment_closes_on_line(line):
-    closes = []
-    i, n = 0, len(line)
-    while i < n:
-        literal_end = _csharp_try_skip_literal(line, i)
-        if literal_end is not None:
-            i = literal_end
-            continue
-        if line[i] == "/" and i + 1 < n and line[i + 1] == "/":
-            break
-        if line[i] == "/" and i + 1 < n and line[i + 1] == "*":
-            close = line.find("*/", i + 2)
-            if close == -1:
-                break
-            closes.append(close + 2)
-            i = close + 2
-            continue
-        i += 1
-    return closes
-
-
-def _csharp_attribute_group_after_a_close(lines, li, tail, close_li):
-    for close in _csharp_block_comment_closes_on_line(tail):
-        remainder = tail[close:].lstrip(" \t")
-        candidate = _csharp_attribute_groups_from(lines, li, remainder, close_li)
-        if candidate is not None and candidate[2] == "":
-            return candidate
-    return None
-
-
-class _CSharpBackwardAttributeGroup(NamedTuple):
-    attrs: str
-    start_li: int
-    remainder: str
-    ends_walk: bool
-
-
-def _csharp_resolve_attribute_group_backward(spans, lines, li, close_li):
-    stop = False
-    while True:
-        block_span = _csharp_enclosing_block_span(spans, li)
-        if block_span is not None:
-            li = block_span[1]
-            continue
-        group = _csharp_line_attribute_group(lines, li, close_li)
-        if group is not None:
-            break
-        stripped = lines[li].lstrip(" \t")
-        leading_block = _csharp_leading_block_remainder(spans, lines, li)
-        if leading_block is not None:
-            block_start_li, end_li, tail = leading_block
-            if tail:
-                same_line_group = _csharp_attribute_groups_from(lines, end_li, tail)
-                if same_line_group is not None:
-                    group = same_line_group
-                    li = block_start_li
-                    break
-                fallback_group = _csharp_attribute_group_after_a_close(lines, end_li, tail, close_li)
-                if fallback_group is not None:
-                    group = fallback_group
-                    stop = True
-                    break
-                deep_group = _csharp_trailing_attribute_group(lines, end_li, tail, close_li)
-                if deep_group is not None:
-                    group = deep_group
-                    stop = True
-                    break
-                return None
-        else:
-            mixed_line_group = _csharp_trailing_attribute_group(lines, li, lines[li], close_li)
-            if mixed_line_group is not None:
-                group = mixed_line_group
-                stop = True
-                break
-        if stripped.startswith("/*") or _csharp_is_line_comment(stripped):
-            li -= 1
-            while li >= 0 and not lines[li].strip():
-                li -= 1
-            if li < 0:
-                return None
-            continue
-        return None
-    attrs_text, remainder_li, remainder = group
-    if remainder != "":
-        deep_group = _csharp_trailing_attribute_group(lines, remainder_li, remainder, close_li)
-        if deep_group is not None:
-            deep_attrs, deep_li, deep_remainder = deep_group
-            return _CSharpBackwardAttributeGroup(deep_attrs, deep_li, deep_remainder, True)
-    return _CSharpBackwardAttributeGroup(attrs_text, li, remainder, stop)
-
-
-def _csharp_own_line_attribute_group_before_doc_marker(spans, lines, start_li):
-    for kind, span_li, end_li, content, _close_col in spans:
-        if kind == "doc" and span_li == start_li and end_li == start_li:
-            prefix_len = len(lines[start_li]) - len(content) - 3
-            prefix = lines[start_li][:prefix_len]
-            return _csharp_attribute_groups_from(lines, start_li, prefix.lstrip(" \t"))
-    return None
-
-
-def _csharp_test_attribute_before_doc_block(spans, lines, start_li, trailing_doc_starts):
-    attribute_names = []
-    if start_li in trailing_doc_starts:
-        own_group = _csharp_own_line_attribute_group_before_doc_marker(spans, lines, start_li)
-        if own_group is None or own_group[2] != "":
-            return False
-        attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(own_group[0]))
-    li = start_li - 1
-    while li >= 0 and not lines[li].strip():
-        li -= 1
-    if li < 0:
-        return any(_is_csharp_test_attribute(n) for n in attribute_names)
-    close_li = li
-    while li >= 0:
-        resolved = _csharp_resolve_attribute_group_backward(spans, lines, li, close_li)
-        if resolved is None or resolved.remainder != "":
-            break
-        attribute_names.extend(_CSHARP_ATTRIBUTE_NAME_RE.findall(resolved.attrs))
-        if resolved.ends_walk:
-            break
-        li = resolved.start_li - 1
-        while li >= 0 and not lines[li].strip():
-            li -= 1
-    return any(_is_csharp_test_attribute(n) for n in attribute_names)
-
-
-def _csharp_test_doc_blocking_violations(spans, lines, trailing_doc_starts):
-    violations = []
-    seen_rows = set()
-    for kind, start_li, end_li, _content, close_col in spans:
-        if kind != "doc":
-            continue
-        found = _csharp_test_method_after_doc_block(spans, lines, end_li, close_col)
-        if found is None and _csharp_test_attribute_before_doc_block(spans, lines, start_li, trailing_doc_starts):
-            found, _attribute_names = _csharp_method_signature_after_doc_close(spans, lines, end_li, close_col)
-        if found is not None and found[1] not in seen_rows:
-            seen_rows.add(found[1])
-            name, row = found
-            violation = _test_docstring_violation(name, row, "an XML doc comment", "XML doc comment")
-            violations.append((violation, (row, row)))
+        seen_rows.add(name.row)
+        row = name.row + 1
+        violation = _test_docstring_violation(name.text, row, "an XML doc comment", "XML doc comment")
+        violations.append((violation, (row, row)))
     return violations
 
 
@@ -1073,9 +848,9 @@ def _csharp_external_id_blocking_violations(spans, allowed_prefixes):
     return violations
 
 
-def _csharp_blocking_violations(spans, lines, allowed_prefixes, trailing_doc_starts):
+def _csharp_blocking_violations(text, spans, allowed_prefixes):
     return (
-        _csharp_test_doc_blocking_violations(spans, lines, trailing_doc_starts)
+        _csharp_test_doc_blocking_violations(text)
         + _csharp_external_id_blocking_violations(spans, allowed_prefixes)
     )
 
@@ -1083,9 +858,8 @@ def _csharp_blocking_violations(spans, lines, allowed_prefixes, trailing_doc_sta
 def find_csharp_blocking_violations(text, file_path):
     text = _strip_csharp_bom(text)
     allowed_prefixes = _repo_id_prefix_allowlist(file_path)
-    trailing_doc_starts = set()
-    spans = _csharp_comment_spans(text, trailing_doc_starts)
-    return _csharp_blocking_violations(spans, _split_rows(text), allowed_prefixes, trailing_doc_starts)
+    spans = _csharp_comment_spans(text)
+    return _csharp_blocking_violations(text, spans, allowed_prefixes)
 
 
 def find_csharp_findings(text):
@@ -1704,12 +1478,10 @@ def _findings_for_file(file_path, text):
         return find_jinja_issue_reference_violations(text), find_jinja_findings(text)
     if file_path.endswith(".cs"):
         text = _strip_csharp_bom(text)
-        trailing_doc_starts = set()
-        spans = _csharp_comment_spans(text, trailing_doc_starts)
-        lines = _split_rows(text)
+        spans = _csharp_comment_spans(text)
         allowed_prefixes = _repo_id_prefix_allowlist(file_path)
-        issue_blocking, findings = _scan_csharp_comment_spans(spans, lines)
-        blocking = _csharp_blocking_violations(spans, lines, allowed_prefixes, trailing_doc_starts) + issue_blocking
+        issue_blocking, findings = _scan_csharp_comment_spans(spans, _split_rows(text))
+        blocking = _csharp_blocking_violations(text, spans, allowed_prefixes) + issue_blocking
         return blocking, findings
     return [], []
 
