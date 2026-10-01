@@ -260,6 +260,17 @@ def test_doc_comment_before_two_chained_block_comments_does_not_name_a_method_in
     assert violations == [(_csharp_test_doc_violation("ChecksTheThing", 5), (5, 5))]
 
 
+def test_comment_spans_truncate_a_never_closing_block_comment_at_end_of_its_opening_line():
+    text = "/* unterminated\n/// doc\npublic void X()\n{\n}\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [
+        ("block", 0, 0, " unterminated", None),
+        ("doc", 1, 1, " doc", None),
+    ]
+
+
 def test_doc_comment_before_a_comment_closing_with_trailing_real_code_names_the_method():
     text = (
         "/// <summary>Checks the thing.</summary>\n"
@@ -1468,27 +1479,20 @@ def test_findings_for_file_routes_cs_files_to_the_csharp_analyser():
     assert any("date, measurement, or SHA" in message for message, _ in advisory)
 
 
-def test_findings_for_file_tokenizes_a_cs_file_at_most_once(monkeypatch):
+def test_findings_for_file_runs_the_csharp_lexer_exactly_once(monkeypatch):
     text = "int x = 1; // fixed on 2026-01-05\n/// <summary>doc</summary>\n[Fact]\nvoid T() {}\n"
-    span_calls = []
-    token_calls = []
-    real_spans = guard._csharp_comment_spans
-    real_tokens = guard._csharp_code_tokens
+    lex_calls = []
+    real_lex = guard._csharp_lex
 
-    def counting_spans(t):
-        span_calls.append(t)
-        return real_spans(t)
+    def counting_lex(t):
+        lex_calls.append(t)
+        return real_lex(t)
 
-    def counting_tokens(t):
-        token_calls.append(t)
-        return real_tokens(t)
-
-    monkeypatch.setattr(guard, "_csharp_comment_spans", counting_spans)
-    monkeypatch.setattr(guard, "_csharp_code_tokens", counting_tokens)
+    monkeypatch.setattr(guard, "_csharp_lex", counting_lex)
 
     guard._findings_for_file("/repo/src/Thing.cs", text)
 
-    assert (len(span_calls), len(token_calls)) == (1, 1)
+    assert len(lex_calls) == 1
 
 
 def _run_hook(payload):
@@ -1683,6 +1687,14 @@ def test_multi_line_block_comment_close_col_is_measured_on_its_own_close_line():
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == [("block", 0, 1, " a\n  b ", 4)]
+
+
+def test_comment_spans_do_not_open_a_block_comment_on_a_preprocessor_line():
+    text = "#region a /* b\n/// doc\n[Fact]\npublic void X()\n{\n}\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("doc", 1, 1, " doc", None)]
 
 
 def test_adjacent_quotes_in_a_regular_string_are_not_doubling_escaped():

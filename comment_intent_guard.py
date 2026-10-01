@@ -557,34 +557,55 @@ def find_blocking_violations(text, file_path):
     return violations
 
 
-def _csharp_comment_spans(text):
+def _csharp_lex(text):
     spans = []
+    tokens = []
+    doc_anchors = []
     i, n = 0, len(text)
-    line, counted_up_to = 0, 0
+    row = 0
+    line_start = True
     line_has_code = False
-
-    def line_at(pos):
-        nonlocal line, counted_up_to
-        line += text.count("\n", counted_up_to, pos)
-        counted_up_to = pos
-        return line
 
     while i < n:
         ch = text[i]
+
+        if ch == "\n":
+            row += 1
+            line_start = True
+            line_has_code = False
+            i += 1
+            continue
+
+        if ch in " \t\r\f\v":
+            i += 1
+            continue
+
+        if ch == "#" and line_start:
+            eol = text.find("\n", i)
+            i = n if eol == -1 else eol
+            continue
+
+        line_start = False
+
         literal_end = _csharp_try_skip_literal(text, i)
         if literal_end is not None:
+            tokens.append(_CSharpToken('"', row))
+            row += text.count("\n", i, literal_end)
             line_has_code = True
             i = literal_end
             continue
+
         if ch == "/" and i + 1 < n and text[i + 1] == "/":
-            is_doc = i + 2 < n and text[i + 2] == "/" and not (i + 3 < n and text[i + 3] == "/")
+            is_doc = _csharp_is_doc_opener(text, i)
             is_leading = not line_has_code
             marker_len = 3 if is_doc else 2
-            li = line_at(i)
+            li = row
             eol = text.find("\n", i)
             eol = n if eol == -1 else eol
             kind = "doc" if is_doc else "line"
             content = text[i + marker_len:eol]
+            if is_doc:
+                doc_anchors.append(len(tokens))
             if is_doc and is_leading and spans and spans[-1][0] == "doc" and spans[-1][2] + 1 == li:
                 prev_kind, prev_start, _prev_end, prev_content, _prev_close_col = spans[-1]
                 spans[-1] = (prev_kind, prev_start, li, f"{prev_content}\n{content}", None)
@@ -592,33 +613,47 @@ def _csharp_comment_spans(text):
                 spans.append((kind, li, li, content, None))
             i = eol
             continue
+
         if ch == "/" and i + 1 < n and text[i + 1] == "*":
-            start_li = line_at(i)
+            start_li = row
+            is_doc_opener = _csharp_is_doc_opener(text, i)
+            if is_doc_opener:
+                doc_anchors.append(len(tokens))
+            block_kind = "doc" if is_doc_opener else "block"
             close = text.find("*/", i + 2)
-            end = n if close == -1 else close
-            end_li = start_li + text.count("\n", i, end)
-            is_javadoc = (
-                i + 2 < n and text[i + 2] == "*" and not (i + 3 < n and text[i + 3] in ("*", "/"))
-            )
-            block_kind = "doc" if is_javadoc else "block"
-            close_col = None
-            if close != -1:
-                close_col = close - (text.rfind("\n", 0, close) + 1)
-            spans.append((block_kind, start_li, end_li, text[i + 2:end], close_col))
-            i = n if close == -1 else close + 2
+            if close == -1:
+                eol = text.find("\n", i)
+                end = n if eol == -1 else eol
+                spans.append((block_kind, start_li, start_li, text[i + 2:end], None))
+                i = end
+                continue
+            end_li = start_li + text.count("\n", i, close)
+            close_col = close - (text.rfind("\n", 0, close) + 1)
+            spans.append((block_kind, start_li, end_li, text[i + 2:close], close_col))
+            row = end_li
+            i = close + 2
             if end_li != start_li:
                 line_has_code = False
             continue
-        if ch == "\n":
-            line_has_code = False
-            i += 1
+
+        if ch.isalnum() or ch in "_@":
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            tokens.append(_CSharpToken(text[i:j], row))
+            line_has_code = True
+            i = j
             continue
-        if ch in " \t":
-            i += 1
-            continue
+
+        tokens.append(_CSharpToken(ch, row))
         line_has_code = True
         i += 1
-    return spans
+
+    return spans, tokens, doc_anchors
+
+
+def _csharp_comment_spans(text):
+    return _csharp_lex(text)[0]
 
 
 def _strip_csharp_bom(text):
@@ -694,56 +729,6 @@ def _csharp_is_doc_opener(text, i):
     if text.startswith("///", i):
         return not text.startswith("////", i)
     return text.startswith("/**", i) and text[i + 3:i + 4] not in ("*", "/")
-
-
-def _csharp_code_tokens(text):
-    tokens, doc_anchors = [], []
-    i, n, row, line_start = 0, len(text), 0, True
-    while i < n:
-        ch = text[i]
-        if ch == "\n":
-            row, line_start, i = row + 1, True, i + 1
-            continue
-        if ch in " \t\r\f\v":
-            i += 1
-            continue
-        if ch == "#" and line_start:
-            eol = text.find("\n", i)
-            i = n if eol == -1 else eol
-            continue
-        line_start = False
-        if text.startswith("//", i) or text.startswith("/*", i):
-            if _csharp_is_doc_opener(text, i):
-                doc_anchors.append(len(tokens))
-            if text[i + 1] == "/":
-                eol = text.find("\n", i)
-                i = n if eol == -1 else eol
-                continue
-            close = text.find("*/", i + 2)
-            if close == -1:
-                eol = text.find("\n", i)
-                i = n if eol == -1 else eol
-                continue
-            end = close + 2
-            row += text.count("\n", i, end)
-            i = end
-            continue
-        literal_end = _csharp_try_skip_literal(text, i)
-        if literal_end is not None:
-            tokens.append(_CSharpToken('"', row))
-            row += text.count("\n", i, literal_end)
-            i = literal_end
-            continue
-        if ch.isalnum() or ch in "_@":
-            j = i + 1
-            while j < n and (text[j].isalnum() or text[j] == "_"):
-                j += 1
-            tokens.append(_CSharpToken(text[i:j], row))
-            i = j
-            continue
-        tokens.append(_CSharpToken(ch, row))
-        i += 1
-    return tokens, doc_anchors
 
 
 def _csharp_matching_bracket(tokens, k, step):
@@ -826,8 +811,7 @@ def _csharp_declared_method_name(tokens, k):
     return None
 
 
-def _csharp_test_doc_blocking_violations(text):
-    tokens, doc_anchors = _csharp_code_tokens(text)
+def _csharp_test_doc_blocking_violations(tokens, doc_anchors):
     violations, seen_rows = [], set()
     for anchor in doc_anchors:
         before = _csharp_attribute_sections_before(tokens, anchor)
@@ -857,9 +841,9 @@ def _csharp_external_id_blocking_violations(spans, allowed_prefixes):
     return violations
 
 
-def _csharp_blocking_violations(text, spans, allowed_prefixes):
+def _csharp_blocking_violations(tokens, doc_anchors, spans, allowed_prefixes):
     return (
-        _csharp_test_doc_blocking_violations(text)
+        _csharp_test_doc_blocking_violations(tokens, doc_anchors)
         + _csharp_external_id_blocking_violations(spans, allowed_prefixes)
     )
 
@@ -867,8 +851,8 @@ def _csharp_blocking_violations(text, spans, allowed_prefixes):
 def find_csharp_blocking_violations(text, file_path):
     text = _strip_csharp_bom(text)
     allowed_prefixes = _repo_id_prefix_allowlist(file_path)
-    spans = _csharp_comment_spans(text)
-    return _csharp_blocking_violations(text, spans, allowed_prefixes)
+    spans, tokens, doc_anchors = _csharp_lex(text)
+    return _csharp_blocking_violations(tokens, doc_anchors, spans, allowed_prefixes)
 
 
 def find_csharp_findings(text):
@@ -1487,10 +1471,10 @@ def _findings_for_file(file_path, text):
         return find_jinja_issue_reference_violations(text), find_jinja_findings(text)
     if file_path.endswith(".cs"):
         text = _strip_csharp_bom(text)
-        spans = _csharp_comment_spans(text)
+        spans, tokens, doc_anchors = _csharp_lex(text)
         allowed_prefixes = _repo_id_prefix_allowlist(file_path)
         issue_blocking, findings = _scan_csharp_comment_spans(spans, _split_rows(text))
-        blocking = _csharp_blocking_violations(text, spans, allowed_prefixes) + issue_blocking
+        blocking = _csharp_blocking_violations(tokens, doc_anchors, spans, allowed_prefixes) + issue_blocking
         return blocking, findings
     return [], []
 
