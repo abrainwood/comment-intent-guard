@@ -621,6 +621,59 @@ def test_doc_comment_before_a_non_test_attribute_then_block_comment_then_another
     assert violations == []
 
 
+def test_doc_comment_before_a_generic_attribute_whose_type_argument_names_a_test_attribute_is_not_blocked():
+    text = (
+        "/// <summary>x</summary>\n"
+        "[Foo<int, Fact>]\n"
+        "public void X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_two_doc_commented_test_methods_declared_on_the_same_row_are_both_blocked():
+    text = "/** a */ [Fact] public void A() {} /** b */ [Fact] public void B() {}\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [
+        (_csharp_test_doc_violation("A", 1), (1, 1)),
+        (_csharp_test_doc_violation("B", 1), (1, 1)),
+    ]
+
+
+def test_doc_comment_before_a_tuple_returning_method_names_the_method_not_the_modifier():
+    text = (
+        "/// <summary>x</summary>\n"
+        "[Fact]\n"
+        "public (int, int) X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_tuple_returning_method_with_a_tuple_parameter_names_the_method():
+    text = (
+        "/// <summary>x</summary>\n"
+        "[Fact]\n"
+        "public (int, int) X((int, int) pair)\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
 def test_doc_comment_before_a_line_comment_containing_a_bracket_group_is_not_blocked():
     text = (
         "/// <summary>x</summary>\n"
@@ -1434,7 +1487,10 @@ def test_a_bare_attribute_before_a_block_comment_closing_on_a_non_test_attribute
 
 @pytest.mark.parametrize(
     "name",
-    ["Fact", "Theory", "Test", "TestCase", "TestMethod", "FactAttribute", "Xunit.Fact", "Xunit.FactAttribute"],
+    [
+        "Fact", "Theory", "Test", "TestCase", "TestMethod", "FactAttribute", "Xunit.Fact", "Xunit.FactAttribute",
+        "DataTestMethod", "TestCaseSource", "SkippableFact", "SkippableTheory",
+    ],
 )
 def test_is_csharp_test_attribute_recognises_test_attribute_names(name):
     assert guard._is_csharp_test_attribute(name)
@@ -1443,6 +1499,31 @@ def test_is_csharp_test_attribute_recognises_test_attribute_names(name):
 @pytest.mark.parametrize("name", ["HttpGet", "Obsolete", "Serializable", "HttpGetAttribute"])
 def test_is_csharp_test_attribute_rejects_non_test_attribute_names(name):
     assert not guard._is_csharp_test_attribute(name)
+
+
+@pytest.mark.parametrize("name", ["CustomFact", "UIFact", "CustomTheory"])
+def test_is_csharp_test_attribute_recognises_fact_and_theory_suffixed_names(name):
+    assert guard._is_csharp_test_attribute(name)
+
+
+def test_is_csharp_test_attribute_rejects_artifact():
+    assert not guard._is_csharp_test_attribute("Artifact")
+
+
+def test_a_plain_block_comment_opened_with_three_stars_before_a_fact_is_not_blocked():
+    text = "/*** not a doc comment */\n[Fact]\npublic void TestFoo()\n{\n}\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_an_external_id_inside_a_three_star_block_comment_is_not_a_blocking_violation():
+    text = "/*** Fixes JIRA-4821, not an XML doc comment ***/\npublic void DoesAThing()\n{\n}\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/src/Thing.cs")
+
+    assert violations == []
 
 
 def test_doc_comment_on_an_http_get_method_is_not_blocked():

@@ -717,12 +717,17 @@ def _scan_csharp_comment_spans(spans, lines):
     return blocking, findings
 
 
-_CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({"Fact", "Theory", "Test", "TestCase", "TestMethod"})
+_CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({
+    "Fact", "Theory", "Test", "TestCase", "TestMethod",
+    "DataTestMethod", "TestCaseSource", "SkippableFact", "SkippableTheory",
+})
 
 
 def _is_csharp_test_attribute(name):
-    name = name.rpartition(".")[2]
-    return name in _CSHARP_TEST_ATTRIBUTE_NAMES or name.removesuffix("Attribute") in _CSHARP_TEST_ATTRIBUTE_NAMES
+    name = name.rpartition(".")[2].removesuffix("Attribute")
+    if name in _CSHARP_TEST_ATTRIBUTE_NAMES:
+        return True
+    return name.endswith("Fact") or name.endswith("Theory")
 
 
 _CSHARP_STOP_BEFORE_NAME = frozenset({";", "{", "}", "="})
@@ -743,8 +748,8 @@ def _csharp_is_doc_opener(text, i):
     return text.startswith("/**", i) and text[i + 3:i + 4] not in ("*", "/")
 
 
-def _csharp_matching_bracket(tokens, k, step):
-    opener, closer = ("[", "]") if step > 0 else ("]", "[")
+def _csharp_matching_bracket(tokens, k, step, brackets=("[", "]")):
+    opener, closer = brackets if step > 0 else brackets[::-1]
     depth = 0
     while 0 <= k < len(tokens):
         if tokens[k].text == opener:
@@ -791,11 +796,21 @@ def _csharp_attribute_names(tokens, sections):
     names = []
     for start, end in sections:
         depth = 0
+        angle_depth = 0
         for k in range(start, end):
             text = tokens[k].text
             depth += 1 if text in _CSHARP_OPEN_BRACKETS else 0
             depth -= 1 if text in _CSHARP_CLOSE_BRACKETS else 0
-            if depth == 1 and tokens[k - 1].text in _CSHARP_ATTRIBUTE_NAME_LEAD and _csharp_is_identifier_start(text[0]):
+            if text == "<":
+                angle_depth += 1
+            elif text == ">":
+                angle_depth = max(0, angle_depth - 1)
+            if (
+                depth == 1
+                and angle_depth == 0
+                and tokens[k - 1].text in _CSHARP_ATTRIBUTE_NAME_LEAD
+                and _csharp_is_identifier_start(text[0])
+            ):
                 dotted = k
                 while dotted + 2 < end and tokens[dotted + 1].text == ".":
                     dotted += 2
@@ -803,8 +818,21 @@ def _csharp_attribute_names(tokens, sections):
     return names
 
 
+def _csharp_is_tuple_return_type_open(tokens, k):
+    close_k = _csharp_matching_bracket(tokens, k, 1, ("(", ")"))
+    return (
+        close_k is not None
+        and close_k + 2 < len(tokens)
+        and _csharp_is_identifier_start(tokens[close_k + 1].text[0])
+        and tokens[close_k + 2].text == "("
+    )
+
+
 def _csharp_declared_method_name(tokens, k):
     while k < len(tokens) and tokens[k].text not in _CSHARP_STOP_BEFORE_NAME:
+        if tokens[k].text == "(" and _csharp_is_tuple_return_type_open(tokens, k):
+            k = _csharp_matching_bracket(tokens, k, 1, ("(", ")")) + 1
+            continue
         if tokens[k].text == "(":
             name_k = k - 1
             if tokens[name_k].text == ">":
@@ -824,7 +852,7 @@ def _csharp_declared_method_name(tokens, k):
 
 
 def _csharp_test_doc_blocking_violations(tokens, doc_anchors):
-    violations, seen_rows = [], set()
+    violations, seen = [], set()
     for anchor in doc_anchors:
         before = _csharp_attribute_sections_before(tokens, anchor)
         after, declaration_k = _csharp_attribute_sections_after(tokens, anchor)
@@ -832,9 +860,9 @@ def _csharp_test_doc_blocking_violations(tokens, doc_anchors):
         if not any(_is_csharp_test_attribute(n) for n in names):
             continue
         name = _csharp_declared_method_name(tokens, declaration_k)
-        if name is None or name.row in seen_rows:
+        if name is None or (name.row, name.text) in seen:
             continue
-        seen_rows.add(name.row)
+        seen.add((name.row, name.text))
         row = name.row + 1
         violation = _test_docstring_violation(name.text, row, "an XML doc comment", "XML doc comment")
         violations.append((violation, (row, row)))
