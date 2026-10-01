@@ -1505,6 +1505,33 @@ def test_a_trailing_line_comment_on_an_if_directive_is_an_advisory_finding():
     assert advisory == [(guard._evidence_finding("Comment", 0), (1, 1))]
 
 
+def test_a_triple_slash_trailing_a_preprocessor_line_is_not_a_leading_doc_comment():
+    text = "#if X /// d\n[Fact]\npublic void T()\n{\n}\n#endif\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == []
+
+
+def test_a_triple_slash_trailing_a_preprocessor_line_does_not_merge_with_the_doc_above():
+    text = "/// a\n#if X /// b\n#endif\n"
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [
+        ("doc", 0, 0, " a", None),
+        ("line", 1, 1, "/ b", None),
+    ]
+
+
+def test_a_double_slash_inside_a_string_literal_on_a_directive_line_is_not_a_comment():
+    text = '#line 1 "a//b.cs"\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == []
+
+
 def test_a_hash_not_at_the_start_of_a_line_is_not_a_preprocessor_directive():
     text = "x = #1 /* oops */ // fixed on 2026-01-05\n"
 

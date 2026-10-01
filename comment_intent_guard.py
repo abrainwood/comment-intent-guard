@@ -583,8 +583,20 @@ def _csharp_lex(text):
         if ch == "#" and line_start:
             eol = text.find("\n", i)
             eol = n if eol == -1 else eol
-            comment_at = text.find("//", i, eol)
-            i = eol if comment_at == -1 else comment_at
+            j = i
+            comment_at = -1
+            while j < eol:
+                literal_end = _csharp_try_skip_literal(text, j)
+                if literal_end is not None:
+                    j = min(literal_end, eol)
+                    continue
+                if text.startswith("//", j):
+                    comment_at = j
+                    break
+                j += 1
+            if comment_at != -1:
+                spans.append(("line", row, row, text[comment_at + 2:eol], None))
+            i = eol
             continue
 
         line_start = False
