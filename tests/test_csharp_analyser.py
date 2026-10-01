@@ -635,6 +635,27 @@ def test_doc_comment_before_a_generic_attribute_whose_type_argument_names_a_test
     assert violations == []
 
 
+@pytest.mark.parametrize(
+    "attribute_args",
+    [
+        "InlineData(1 < 2), Theory",
+        "Foo(1 << 2), Fact",
+        "Foo(a <= b), Fact",
+        "Foo(a > b), Fact",
+        "Foo<int>, Fact",
+        "Foo<Bar<int>>, Fact",
+    ],
+)
+def test_doc_comment_before_a_test_attribute_after_a_relational_or_generic_token_in_the_section_names_the_method(
+    attribute_args,
+):
+    text = f"/// x\n[{attribute_args}]\npublic void X()\n{{\n}}\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
 def test_two_doc_commented_test_methods_declared_on_the_same_row_are_both_blocked():
     text = "/** a */ [Fact] public void A() {} /** b */ [Fact] public void B() {}\n"
 
@@ -666,6 +687,68 @@ def test_doc_comment_before_a_tuple_returning_method_with_a_tuple_parameter_name
         "[Fact]\n"
         "public (int, int) X((int, int) pair)\n"
         "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+@pytest.mark.parametrize(
+    "signature",
+    [
+        "public static (int,int) X<T>()",
+        "public (int,int)[] X()",
+        "public (int,int)? X()",
+        "public new (int, int) X()",
+    ],
+)
+def test_doc_comment_before_a_decorated_tuple_returning_signature_names_the_method(signature):
+    text = f"/// x\n[Fact]\n{signature}\n{{\n}}\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_generic_task_of_tuple_returning_method_names_the_method():
+    text = (
+        "/// x\n"
+        "[Fact]\n"
+        "public async Task<(int a,int b)> X()\n"
+        "{\n"
+        "}\n"
+    )
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_truncated_parameter_list_at_end_of_file_falls_back_to_the_method_name():
+    text = "/// x\n[Fact]\npublic void X(\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_signature_followed_by_unrecognised_trailing_text_falls_back_to_the_method_name():
+    text = "/// x\n[Fact]\npublic void X() Y\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_method_whose_body_deconstructs_a_tuple_names_the_method_not_the_deconstruction():
+    text = (
+        "/// <summary>x</summary>\n"
+        "[Fact]\n"
+        "public void X()\n"
+        "{\n"
+        "    (var a, var b) = Get();\n"
         "}\n"
     )
 
@@ -1488,7 +1571,7 @@ def test_a_bare_attribute_before_a_block_comment_closing_on_a_non_test_attribute
 @pytest.mark.parametrize(
     "name",
     [
-        "Fact", "Theory", "Test", "TestCase", "TestMethod", "FactAttribute", "Xunit.Fact", "Xunit.FactAttribute",
+        "Fact", "Theory", "Test", "TestCase", "TestMethod", "FactAttribute",
         "DataTestMethod", "TestCaseSource", "SkippableFact", "SkippableTheory",
     ],
 )
@@ -1496,18 +1579,40 @@ def test_is_csharp_test_attribute_recognises_test_attribute_names(name):
     assert guard._is_csharp_test_attribute(name)
 
 
-@pytest.mark.parametrize("name", ["HttpGet", "Obsolete", "Serializable", "HttpGetAttribute"])
+@pytest.mark.parametrize("name", ["HttpGet", "Obsolete", "Serializable", "HttpGetAttribute", "Factory", "FactoryAttribute"])
 def test_is_csharp_test_attribute_rejects_non_test_attribute_names(name):
     assert not guard._is_csharp_test_attribute(name)
 
 
-@pytest.mark.parametrize("name", ["CustomFact", "UIFact", "CustomTheory"])
+@pytest.mark.parametrize("name", ["CustomFact", "UIFact", "CustomTheory", "CustomFactAttribute"])
 def test_is_csharp_test_attribute_recognises_fact_and_theory_suffixed_names(name):
+    assert guard._is_csharp_test_attribute(name)
+
+
+@pytest.mark.parametrize("name", ["STATestMethod", "UITestMethod"])
+def test_is_csharp_test_attribute_recognises_test_method_suffixed_names(name):
     assert guard._is_csharp_test_attribute(name)
 
 
 def test_is_csharp_test_attribute_rejects_artifact():
     assert not guard._is_csharp_test_attribute("Artifact")
+
+
+@pytest.mark.parametrize("attribute", ["Xunit.Fact", "Xunit.FactAttribute", "Xunit.SkippableFactAttribute"])
+def test_doc_comment_before_a_dotted_test_attribute_is_blocked(attribute):
+    text = f"/// x\n[{attribute}]\npublic void X()\n{{\n}}\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
+
+
+def test_doc_comment_before_a_custom_fact_attribute_is_blocked():
+    text = "/// x\n[CustomFact]\npublic void X()\n{\n}\n"
+
+    violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
+
+    assert violations == [(_csharp_test_doc_violation("X", 3), (3, 3))]
 
 
 def test_a_plain_block_comment_opened_with_three_stars_before_a_fact_is_not_blocked():
@@ -3754,6 +3859,27 @@ _ORACLE_KNOWN_INVALID_CODE_GAPS = frozenset({
     'public void A() /// t\n[Fact] /// x\npublic void X()\n{\n}\n',
     'public void A() /// t\n[Fact] //// c\npublic void X()\n{\n}\n',
     'public void A() /// t\n[Fact] public void A() { }\npublic void X()\n{\n}\n',
+    '/** d */ [Fact]\npublic void A() /// t\npublic void X()\n{\n}\n',
+    '/** d */ [Fact] // c\npublic void A() /// t\npublic void X()\n{\n}\n',
+    '[Fact] /** d */\npublic void A() /// t\npublic void X()\n{\n}\n',
+    '[Fact] /// x\npublic void A() /// t\npublic void X()\n{\n}\n',
+    (
+        '/* a */ int q; /* b */ [Fact] // c\n/// a\n\t[Fact]\n/* a */ /* b */ /* c */ [Fact]\n'
+        'public void A() /// t\npublic void X()\n{\n}\n'
+    ),
+    (
+        '//// c\n[Fact] //// c\n/*** x */\n/** d */ [Fact] // c\n/* a */ /* b */ [Fact]\n'
+        'public void A() /// t\npublic void X()\n{\n}\n'
+    ),
+    (
+        '[Fact] public void A() { }\n/* a */ int q; /* b */ [Obsolete] [Fact]\n'
+        '/* a */ int q; /* b */ [Obsolete] int r; /* c */ [Fact]\n[Fact] /// x\n'
+        'public void A() /// t\npublic void X()\n{\n}\n'
+    ),
+    (
+        '[Trait("x","y")]\n/* a */ int q; /* b */ [Fact] /* c */\n// c /* x */\n[Obsolete] // c\n'
+        '/** d */ [Trait("k", "[x]")]\npublic void A() /// t\n[Obsolete] // c\npublic void X()\n{\n}\n'
+    ),
 })
 
 

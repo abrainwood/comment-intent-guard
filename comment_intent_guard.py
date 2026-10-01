@@ -718,16 +718,16 @@ def _scan_csharp_comment_spans(spans, lines):
 
 
 _CSHARP_TEST_ATTRIBUTE_NAMES = frozenset({
-    "Fact", "Theory", "Test", "TestCase", "TestMethod",
-    "DataTestMethod", "TestCaseSource", "SkippableFact", "SkippableTheory",
+    "Fact", "Theory", "Test", "TestCase", "TestMethod", "DataTestMethod", "TestCaseSource",
 })
+_CSHARP_TEST_ATTRIBUTE_SUFFIXES = ("Fact", "Theory", "TestMethod")
 
 
 def _is_csharp_test_attribute(name):
-    name = name.rpartition(".")[2].removesuffix("Attribute")
+    name = name.removesuffix("Attribute")
     if name in _CSHARP_TEST_ATTRIBUTE_NAMES:
         return True
-    return name.endswith("Fact") or name.endswith("Theory")
+    return name.endswith(_CSHARP_TEST_ATTRIBUTE_SUFFIXES)
 
 
 _CSHARP_STOP_BEFORE_NAME = frozenset({";", "{", "}", "="})
@@ -796,59 +796,59 @@ def _csharp_attribute_names(tokens, sections):
     names = []
     for start, end in sections:
         depth = 0
-        angle_depth = 0
-        for k in range(start, end):
+        k = start
+        while k < end:
             text = tokens[k].text
             depth += 1 if text in _CSHARP_OPEN_BRACKETS else 0
             depth -= 1 if text in _CSHARP_CLOSE_BRACKETS else 0
-            if text == "<":
-                angle_depth += 1
-            elif text == ">":
-                angle_depth = max(0, angle_depth - 1)
-            if (
-                depth == 1
-                and angle_depth == 0
-                and tokens[k - 1].text in _CSHARP_ATTRIBUTE_NAME_LEAD
-                and _csharp_is_identifier_start(text[0])
-            ):
+            if depth == 1 and tokens[k - 1].text in _CSHARP_ATTRIBUTE_NAME_LEAD and _csharp_is_identifier_start(text[0]):
                 dotted = k
                 while dotted + 2 < end and tokens[dotted + 1].text == ".":
                     dotted += 2
                 names.append(tokens[dotted].text.removeprefix("@"))
+                k = dotted
+                if k + 1 < end and tokens[k + 1].text == "<":
+                    close_k = _csharp_matching_bracket(tokens, k + 1, 1, ("<", ">"))
+                    if close_k is not None:
+                        k = close_k
+            k += 1
     return names
 
 
-def _csharp_is_tuple_return_type_open(tokens, k):
-    close_k = _csharp_matching_bracket(tokens, k, 1, ("(", ")"))
-    return (
-        close_k is not None
-        and close_k + 2 < len(tokens)
-        and _csharp_is_identifier_start(tokens[close_k + 1].text[0])
-        and tokens[close_k + 2].text == "("
-    )
+_CSHARP_PARAMETER_LIST_CLOSE_FOLLOWERS = frozenset({"{", "=", ";", ":", "where"})
+
+
+def _csharp_name_before_paren(tokens, k):
+    name_k = k - 1
+    if name_k >= 0 and tokens[name_k].text == ">":
+        depth = 0
+        while name_k >= 0:
+            depth += {">": 1, "<": -1}.get(tokens[name_k].text, 0)
+            if depth == 0:
+                break
+            name_k -= 1
+        name_k -= 1
+    if name_k < 0 or not _csharp_is_identifier_start(tokens[name_k].text[0]):
+        return None
+    name = tokens[name_k].text.removeprefix("@")
+    return tokens[name_k]._replace(text=name) if name else None
 
 
 def _csharp_declared_method_name(tokens, k):
+    fallback = None
     while k < len(tokens) and tokens[k].text not in _CSHARP_STOP_BEFORE_NAME:
-        if tokens[k].text == "(" and _csharp_is_tuple_return_type_open(tokens, k):
-            k = _csharp_matching_bracket(tokens, k, 1, ("(", ")")) + 1
-            continue
         if tokens[k].text == "(":
-            name_k = k - 1
-            if tokens[name_k].text == ">":
-                depth = 0
-                while name_k >= 0:
-                    depth += {">": 1, "<": -1}.get(tokens[name_k].text, 0)
-                    if depth == 0:
-                        break
-                    name_k -= 1
-                name_k -= 1
-            if name_k < 0 or not _csharp_is_identifier_start(tokens[name_k].text[0]):
-                return None
-            name = tokens[name_k].text.removeprefix("@")
-            return tokens[name_k]._replace(text=name) if name else None
+            close_k = _csharp_matching_bracket(tokens, k, 1, ("(", ")"))
+            if fallback is None:
+                fallback = _csharp_name_before_paren(tokens, k)
+            if close_k is None:
+                break
+            if close_k + 1 < len(tokens) and tokens[close_k + 1].text in _CSHARP_PARAMETER_LIST_CLOSE_FOLLOWERS:
+                return _csharp_name_before_paren(tokens, k)
+            k = close_k + 1
+            continue
         k += 1
-    return None
+    return fallback
 
 
 def _csharp_test_doc_blocking_violations(tokens, doc_anchors):
