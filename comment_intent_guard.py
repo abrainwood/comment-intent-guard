@@ -583,19 +583,20 @@ def _csharp_lex(text):
         if ch == "#" and line_start:
             eol = text.find("\n", i)
             eol = n if eol == -1 else eol
-            j = i
+            directive = text[i:eol]
+            j = 0
             comment_at = -1
-            while j < eol:
-                literal_end = _csharp_try_skip_literal(text, j)
+            while j < len(directive):
+                literal_end = _csharp_try_skip_literal(directive, j)
                 if literal_end is not None:
-                    j = min(literal_end, eol)
+                    j = literal_end
                     continue
-                if text.startswith("//", j):
+                if directive.startswith("//", j):
                     comment_at = j
                     break
                 j += 1
             if comment_at != -1:
-                spans.append(("line", row, row, text[comment_at + 2:eol], None))
+                spans.append(("line", row, row, directive[comment_at + 2:], None))
             i = eol
             continue
 
@@ -986,137 +987,156 @@ def _csharp_dollar_run_length(text, i):
     return run
 
 
-def _csharp_try_skip_literal(text, i):
+def _csharp_classify_literal_open(text, i):
     n = len(text)
     ch = text[i]
     if ch == "@" and i + 1 < n and text[i + 1] == '"':
-        return _csharp_skip_verbatim_string(text, i + 1)
+        return ("plain", _csharp_skip_verbatim_string(text, i + 1))
     if ch == "@" and i + 2 < n and text[i + 1] == "$" and text[i + 2] == '"':
-        return _csharp_skip_interpolated_string(text, i + 2, verbatim=True)
+        return ("S", True, i + 3)
     if ch == "$":
         dollar_run = _csharp_dollar_run_length(text, i)
         q = i + dollar_run
         if q < n and text[q] == "@" and q + 1 < n and text[q + 1] == '"':
-            return _csharp_skip_interpolated_string(text, q + 1, verbatim=True)
+            return ("S", True, q + 2)
         if q < n and text[q] == '"':
             quote_run = 1
             while q + quote_run < n and text[q + quote_run] == '"':
                 quote_run += 1
             if quote_run >= 3:
-                return _csharp_skip_raw_interpolated_string(text, q, quote_run, dollar_run)
+                return ("R", quote_run, dollar_run, q + quote_run)
             if dollar_run == 1:
-                return _csharp_skip_interpolated_string(text, q, verbatim=False)
+                return ("S", False, q + 1)
         return None
     if ch == '"':
         quote_run = 1
         while i + quote_run < n and text[i + quote_run] == '"':
             quote_run += 1
         if quote_run >= 3:
-            return _csharp_skip_raw_string(text, i, quote_run)
-        return _csharp_skip_string(text, i)
+            return ("plain", _csharp_skip_raw_string(text, i, quote_run))
+        return ("plain", _csharp_skip_string(text, i))
     if ch == "'":
-        return _csharp_skip_char_literal(text, i)
+        return ("plain", _csharp_skip_char_literal(text, i))
     return None
 
 
-def _csharp_skip_raw_interpolation_hole(text, start, brace_count):
-    i = start
-    n = len(text)
-    depth = 1
-    while i < n:
-        literal_end = _csharp_try_skip_literal(text, i)
-        if literal_end is not None:
-            i = literal_end
-            continue
-        if text[i] == "{":
-            depth += 1
-            i += 1
-            continue
-        if text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                close_run = 1
-                while close_run < brace_count and i + close_run < n and text[i + close_run] == "}":
-                    close_run += 1
-                return i + close_run
-            i += 1
-            continue
-        i += 1
-    return i
+def _csharp_push_literal(opened, stack):
+    if opened[0] == "plain":
+        return opened[1]
+    if opened[0] == "S":
+        stack.append(["S", opened[1]])
+        return opened[2]
+    stack.append(["R", opened[1], opened[2]])
+    return opened[3]
 
 
-def _csharp_skip_raw_interpolated_string(text, quote_index, quote_run, dollar_run):
-    i = quote_index + quote_run
+def _csharp_skip_interpolation_stack(text, i, stack):
     n = len(text)
-    while i < n:
-        if text[i] == "{":
-            brace_run = 1
-            while i + brace_run < n and text[i + brace_run] == "{":
-                brace_run += 1
-            if brace_run >= dollar_run:
-                i = _csharp_skip_raw_interpolation_hole(text, i + dollar_run, dollar_run)
+    while stack:
+        if i >= n:
+            stack.pop()
+            continue
+
+        frame = stack[-1]
+        kind = frame[0]
+
+        if kind == "S":
+            verbatim = frame[1]
+            ch = text[i]
+            if not verbatim and ch == "\n":
+                stack.pop()
                 continue
-            i += brace_run
-            continue
-        if text[i] == '"':
-            close_run = 1
-            while i + close_run < n and text[i + close_run] == '"':
-                close_run += 1
-            if close_run >= quote_run:
-                return i + close_run
-            i += close_run
-            continue
-        i += 1
-    return i
-
-
-def _csharp_skip_interpolation_hole(text, start, verbatim):
-    i = start + 1
-    n = len(text)
-    depth = 1
-    while i < n:
-        if not verbatim and text[i] == "\n":
-            return i
-        literal_end = _csharp_try_skip_literal(text, i)
-        if literal_end is not None:
-            i = literal_end
-            continue
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return i + 1
-        i += 1
-    return i
-
-
-def _csharp_skip_interpolated_string(text, quote_index, verbatim):
-    i = quote_index + 1
-    n = len(text)
-    while i < n:
-        ch = text[i]
-        if not verbatim and ch == "\n":
-            return i
-        if ch == "{" and i + 1 < n and text[i + 1] == "{":
-            i += 2
-            continue
-        if ch == "}" and i + 1 < n and text[i + 1] == "}":
-            i += 2
-            continue
-        if ch == "{":
-            i = _csharp_skip_interpolation_hole(text, i, verbatim)
-            continue
-        if not verbatim and ch == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if ch == '"':
-            if verbatim and i + 1 < n and text[i + 1] == '"':
+            if ch == "{" and i + 1 < n and text[i + 1] == "{":
                 i += 2
                 continue
-            return i + 1
-        i += 1
+            if ch == "{":
+                stack.append(["H", verbatim, 1])
+                i += 1
+                continue
+            if not verbatim and ch == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if ch == '"':
+                if verbatim and i + 1 < n and text[i + 1] == '"':
+                    i += 2
+                    continue
+                i += 1
+                stack.pop()
+                continue
+            i += 1
+            continue
+
+        if kind == "H":
+            verbatim = frame[1]
+            if not verbatim and text[i] == "\n":
+                stack.pop()
+                continue
+            opened = _csharp_classify_literal_open(text, i)
+            if opened is not None:
+                i = _csharp_push_literal(opened, stack)
+                continue
+            if text[i] == "{":
+                frame[2] += 1
+            elif text[i] == "}":
+                frame[2] -= 1
+                if frame[2] == 0:
+                    i += 1
+                    stack.pop()
+                    continue
+            i += 1
+            continue
+
+        if kind == "R":
+            quote_run, dollar_run = frame[1], frame[2]
+            if text[i] == "{":
+                brace_run = 1
+                while i + brace_run < n and text[i + brace_run] == "{":
+                    brace_run += 1
+                if brace_run >= dollar_run:
+                    stack.append(["RH", 1])
+                    i += dollar_run
+                    continue
+                i += brace_run
+                continue
+            if text[i] == '"':
+                close_run = 1
+                while i + close_run < n and text[i + close_run] == '"':
+                    close_run += 1
+                if close_run >= quote_run:
+                    i += close_run
+                    stack.pop()
+                    continue
+                i += close_run
+                continue
+            i += 1
+            continue
+
+        if kind == "RH":
+            opened = _csharp_classify_literal_open(text, i)
+            if opened is not None:
+                i = _csharp_push_literal(opened, stack)
+                continue
+            if text[i] == "{":
+                frame[1] += 1
+            elif text[i] == "}":
+                frame[1] -= 1
+                if frame[1] == 0:
+                    i += 1
+                    stack.pop()
+                    continue
+            i += 1
+            continue
+
     return i
+
+
+def _csharp_try_skip_literal(text, i):
+    opened = _csharp_classify_literal_open(text, i)
+    if opened is None:
+        return None
+    stack = []
+    start = _csharp_push_literal(opened, stack)
+    return _csharp_skip_interpolation_stack(text, start, stack)
 
 
 YAML_COMMENT_RUN_LINE_THRESHOLD = 4

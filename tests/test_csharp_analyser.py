@@ -2089,11 +2089,19 @@ def test_escaped_backslash_char_literal_is_skipped_whole():
 
 
 def test_skip_raw_interpolation_hole_tracks_nested_brace_depth_past_a_literal():
-    hole = '{{ new { a = "}" } }}'
+    text = '$$"""{{ new { a } + """q""" }}"""'
 
-    end = guard._csharp_skip_raw_interpolation_hole(hole, 2, 2)
+    end = guard._csharp_try_skip_literal(text, 0)
 
-    assert end == len(hole)
+    assert end == len(text)
+
+
+def test_a_raw_interpolation_hole_only_opens_on_at_least_as_many_braces_as_dollars():
+    text = '$$"""{{ """a""" }}"""'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
 
 
 def test_nested_brace_depth_in_a_single_dollar_raw_string_hole_is_tracked_past_the_first_close():
@@ -2112,12 +2120,12 @@ def test_nested_braces_and_string_inside_a_raw_interpolation_hole_are_skipped():
     assert spans == [("line", 0, 0, " real #4", None)]
 
 
-def test_skip_interpolated_string_consumes_a_literal_double_brace_pair():
-    text = '"{x} }} end"'
+def test_doubled_open_brace_in_an_interpolated_string_is_a_literal_brace_not_a_hole():
+    text = 'var s = $"{{"; // c\n'
 
-    end = guard._csharp_skip_interpolated_string(text, 0, False)
+    spans = list(guard._csharp_comment_spans(text))
 
-    assert end == len(text)
+    assert spans == [("line", 0, 0, " c", None)]
 
 
 def test_double_brace_immediately_before_the_closing_quote_stays_inside_the_string():
@@ -2126,6 +2134,46 @@ def test_double_brace_immediately_before_the_closing_quote_stays_inside_the_stri
     spans = list(guard._csharp_comment_spans(text))
 
     assert spans == [("line", 0, 0, " closes #12", None)]
+
+
+def test_a_hole_with_one_level_of_nested_braces_requires_both_closes_to_end_the_hole():
+    text = '$"{a{b}"X"}c"'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
+
+
+def test_a_hole_with_two_levels_of_nested_braces_requires_all_three_closes_to_end_the_hole():
+    text = '$"{a{b{c}"X"}d}e"'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
+
+
+def test_doubled_quote_in_a_verbatim_interpolated_string_is_a_literal_quote_not_the_closer():
+    text = '$@"{x} "" y"'
+
+    end = guard._csharp_try_skip_literal(text, 0)
+
+    assert end == len(text)
+
+
+def test_a_verbatim_interpolated_string_nested_in_a_hole_keeps_its_own_verbatim_flag():
+    text = 'x = $"{ $@"a\\" } // not"; // c\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " c", None)]
+
+
+def test_a_raw_interpolated_string_nested_in_a_hole_keeps_its_own_dollar_count():
+    text = 'x = $"{$$"""{\\"}"""}"; // marker\n'
+
+    spans = list(guard._csharp_comment_spans(text))
+
+    assert spans == [("line", 0, 0, " marker", None)]
 
 
 def test_double_brace_literal_inside_a_regular_interpolated_string_is_not_a_hole():
@@ -4465,3 +4513,22 @@ def test_a_lone_at_sign_with_nothing_after_it_is_not_a_declared_name():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == []
+
+
+def test_thousands_of_unterminated_interpolation_hole_openers_do_not_recurse():
+    text = 'x = $@"{\n' * 3000
+
+    spans, tokens, doc_anchors = guard._csharp_lex(text)
+
+    assert spans == []
+    assert [t.text for t in tokens] == ["x", "=", '"']
+    assert all(t.row == 0 for t in tokens)
+
+
+def test_thousands_of_unterminated_interpolation_hole_openers_on_directive_lines_do_not_recurse():
+    text = '#if x = $@"{\n' * 10_000 + "// tail\n"
+
+    spans, tokens, doc_anchors = guard._csharp_lex(text)
+
+    assert spans == [("line", 10_000, 10_000, " tail", None)]
+
