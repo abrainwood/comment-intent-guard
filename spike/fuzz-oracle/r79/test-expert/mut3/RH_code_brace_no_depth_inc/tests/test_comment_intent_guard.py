@@ -1,0 +1,3327 @@
+import ast
+import importlib.util
+import io
+import json
+import os
+import subprocess
+import sys
+import tokenize
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+_MODULE_PATH = Path(__file__).resolve().parent.parent / "comment_intent_guard.py"
+
+
+def _run_hook(payload, env=None):
+    result = subprocess.run(
+        [sys.executable, str(_MODULE_PATH)],
+        input=json.dumps(payload),
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+    return result
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location("comment_intent_guard", _MODULE_PATH)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+guard = _load_module()
+
+
+def test_e2e_write_py_file_with_oversize_docstring_emits_advisory():
+    prose_lines = "\n".join(f"    reason {i}" for i in range(13))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "content": f'"""\n{prose_lines}\n"""\n',
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert "docstring" in output["hookSpecificOutput"]["additionalContext"].lower()
+
+
+def test_e2e_edit_py_file_with_evidence_marker_emits_advisory():
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "old_string": "pass\n",
+            "new_string": "# fixed on 2026-05-22 after the incident\npass\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert "date" in output["hookSpecificOutput"]["additionalContext"].lower() or \
+        "review finding" in output["hookSpecificOutput"]["additionalContext"].lower()
+
+
+def test_e2e_yaml_jinja_comment_with_an_issue_reference_denies_the_edit():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/template_sensors.yaml",
+            "content": "value_template: >-\n  {# issue #91: the direction can flip while the hold is active #}\n  {{ x }}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_e2e_standalone_jinja_comment_with_an_issue_reference_denies_the_edit():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.jinja",
+            "content": "{# issue #91: the direction can flip while the hold is active #}\n{{ x }}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_e2e_standalone_jinja_hash_prefixed_lines_are_not_treated_as_yaml_comment_runs():
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    heading_lines = "\n".join(f"# Section {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.jinja",
+            "content": f"{heading_lines}\n{{{{ value }}}}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_e2e_non_python_file_is_skipped_even_with_oversize_hash_run():
+    prose_lines = "\n".join(f"# reason {i}" for i in range(20))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/docs/design.md",
+            "content": prose_lines,
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_e2e_write_yaml_file_with_oversize_hash_run_emits_advisory_never_deny():
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"# reason {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/jira123_zones.yaml",
+            "content": f"{prose_lines}\nkey: value\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
+    assert "permissionDecision" not in output["hookSpecificOutput"]
+
+
+def test_hook_advises_on_an_oversize_comment_run_in_a_yml_file():
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"# reason {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/zones.yml",
+            "content": f"{prose_lines}\nkey: value\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_hook_advises_on_an_oversize_jinja_comment_in_a_j2_file():
+    body = "\n".join(f"  reason {i}" for i in range(guard.JINJA_BLOCK_LINE_THRESHOLD + 1))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.j2",
+            "content": f"{{#\n{body}\n#}}\n{{{{ value }}}}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    output = json.loads(result.stdout)
+    context = output["hookSpecificOutput"]["additionalContext"]
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD + 1
+    assert (
+        f"Jinja '{{# #}}' block spans {body_line_count + 2} lines "
+        f"(over the {guard.JINJA_BLOCK_LINE_THRESHOLD}-line threshold) "
+        "starting near line 1"
+    ) in context
+
+
+def test_e2e_edit_yaml_file_only_analyses_the_new_string_fragment():
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/config/automations.yaml",
+            "old_string": (
+                "# reason one\n"
+                "# reason two\n"
+                "# reason three\n"
+                "# reason four\n"
+                "# reason five\n"
+                "old_key: value\n"
+            ),
+            "new_string": "timeout: 8  # fixed on 2026-05-22\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    context = json.loads(result.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "date" in context.lower()
+    assert "Comment run of 5" not in context
+
+
+def test_e2e_malformed_json_fails_open():
+    result = subprocess.run(
+        [sys.executable, str(_MODULE_PATH)],
+        input="not json at all {{{",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_e2e_fail_open_leaves_stdout_empty_and_logs_to_stderr():
+    result = subprocess.run(
+        [sys.executable, str(_MODULE_PATH)],
+        input="not json at all {{{",
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+    assert "comment_intent_guard" in result.stderr
+    assert "JSONDecodeError" in result.stderr
+
+
+def test_e2e_clean_python_produces_no_advisory():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "content": "def add(a, b):\n    return a + b\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_e2e_clean_jinja_produces_no_advisory():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/custom_templates/direction.jinja",
+            "content": "{% set x = 1 %}\n{{ x }}\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_version_guard_raises_analysis_unavailable_below_python_3_12():
+    lines = "\n".join(f"    reason {i}" for i in range(13))
+    text = f'"""\n{lines}\n"""\n'
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        with pytest.raises(guard.AnalysisUnavailable, match="3.12"):
+            guard.find_misplaced_rationale(text)
+
+
+def test_single_line_docstring_with_an_evidence_marker_is_flagged_as_a_docstring():
+    text = '"""fixed on 2026-05-22"""\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == [(guard._evidence_finding("Docstring", 0), (1, 1))]
+
+
+def test_docstring_of_exactly_the_threshold_line_count_is_not_flagged():
+    body_line_count = guard.DOCSTRING_LINE_THRESHOLD - 2
+    lines = "\n".join(f"    reason {i}" for i in range(body_line_count))
+    text = f'"""\n{lines}\n"""\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_oversize_docstring_is_flagged():
+    body_line_count = guard.DOCSTRING_LINE_THRESHOLD + 1
+    lines = "\n".join(f"    reason {i}" for i in range(body_line_count))
+    text = f'"""\n{lines}\n"""\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(f"Docstring spans {body_line_count + 2} lines")
+    assert span == (1, body_line_count + 2)
+
+
+def test_docstring_span_covers_the_full_block_including_the_closing_delimiter():
+    body_line_count = guard.DOCSTRING_LINE_THRESHOLD + 1
+    prose = "\n".join(f"    reason {i}" for i in range(body_line_count))
+    text = f'"""\n{prose}\n"""\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    _, span = next(f for f in findings if f[0].startswith("Docstring spans"))
+    assert span == (1, body_line_count + 2)
+
+
+def test_oversize_string_assigned_to_a_variable_is_not_flagged_as_a_docstring():
+    lines = "\n".join(f"    reason {i}" for i in range(13))
+    text = f'x = """\n{lines}\n"""\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_mid_function_bare_triple_quoted_string_is_flagged_though_not_a_real_ast_docstring():
+    prose = "\n".join(f"    reason {i}" for i in range(13))
+    text = f'def f():\n    x = 1\n    """\n{prose}\n    """\n'
+    assert ast.get_docstring(ast.parse(text).body[0]) is None
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(f.startswith("Docstring spans") for f, _ in findings)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["r", "R", "b", "f", "u", "rb", "fR"],
+    ids=["r", "R-proves-case-insensitive", "b", "f", "u", "rb", "fR-proves-case-insensitive"],
+)
+@pytest.mark.parametrize("quote", ['"""', "'''"])
+def test_prefixed_oversize_docstring_is_flagged(prefix, quote):
+    body_line_count = guard.DOCSTRING_LINE_THRESHOLD + 1
+    lines = "\n".join(f"    reason {i}" for i in range(body_line_count))
+    text = f"{prefix}{quote}\n{lines}\n{quote}\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(f"Docstring spans {body_line_count + 2} lines")
+    assert span == (1, body_line_count + 2)
+
+
+def test_short_docstring_naming_a_test_case_is_not_flagged():
+    text = (
+        '"""Test SP-3: setpoint clamps to the panel min when the desired\n'
+        'value would push the fan below its floor."""\n'
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_short_comment_with_a_date_is_flagged_despite_being_under_threshold():
+    text = "# fixed the race condition on 2026-05-22\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
+
+
+def test_short_comment_with_a_measurement_is_flagged():
+    text = "# retry took 340ms after the timeout\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
+
+
+def test_short_comment_with_a_sha_is_flagged():
+    text = "# root-caused in abc1234, see the fix there\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
+
+
+def test_short_comment_with_a_plain_number_is_not_flagged_as_a_sha():
+    text = "# retries: 1234567, unrelated to any commit\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_trailing_comment_with_a_sha_is_flagged():
+    text = "x = 1\nMAX_GAP = 4  # per review of 56305c8ab\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    message, span = next(f for f in findings if f[0].startswith("Comment near line"))
+    assert message.startswith("Comment near line 2 contains a date, measurement, or SHA")
+    assert span == (2, 2)
+
+
+def test_trailing_hash_inside_a_string_literal_is_not_a_comment():
+    text = 'label = "value # 2026-05-22 not a comment"\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_english_hex_looking_words_are_not_flagged_as_a_sha():
+    text = "# the timeout defaced the deadbeef state and effaced the cache\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_short_comment_with_an_issue_reference_is_blocked():
+    text = "# Issue #91's own branch point\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Comment near line 1 contains an issue reference")
+    assert span == (1, 1)
+
+
+def test_trailing_python_comment_with_an_issue_reference_is_blocked_on_its_line():
+    text = "x = 1  # closes #91\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Comment near line 1 contains an issue reference")
+    assert span == (1, 1)
+
+
+def test_short_comment_with_an_issue_reference_is_not_also_an_advisory_finding():
+    text = "# Issue #91's own branch point\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_yaml_description_block_scalar_with_a_leading_ordinal_is_not_flagged_as_an_issue_reference():
+    text = (
+        "description: >-\n"
+        "  #91 second step in the sequence\n"
+        "  #92 third step\n"
+        "next_key: value\n"
+    )
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert violations == []
+
+
+def test_docstring_with_an_issue_reference_is_blocked():
+    text = '"""\nfixes the flapping bug, see #91 for context\n"""\n'
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Docstring near line 1 contains an issue reference")
+    assert span == (1, 3)
+
+
+def test_yaml_description_block_with_an_issue_reference_is_blocked():
+    text = (
+        "description: >-\n"
+        "  see #91 for context on this default\n"
+        "next_key: value\n"
+    )
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Description block scalar near line 2 contains an issue reference")
+    assert span == (1, 2)
+
+
+def test_yaml_jinja_comment_with_an_issue_reference_is_blocked():
+    text = "{# issue #91: the direction can flip while the hold is active #}\n"
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert any("BLOCKED" in v for v, _ in violations)
+
+
+def test_yaml_jinja_comment_with_no_issue_reference_is_not_blocked():
+    text = "{# guards against the hold flipping mid-cycle #}\n"
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert violations == []
+
+
+def test_hash_followed_by_a_letter_is_not_an_issue_reference():
+    text = "# see #abc for the naming scheme\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert violations == []
+
+
+def test_hash_followed_by_whitespace_then_digits_is_not_an_issue_reference():
+    text = "# retry budget is # 91 units, unrelated to any issue\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert violations == []
+
+
+def test_shebang_with_a_hash_digit_shape_on_the_next_line_is_still_blocked_as_an_issue_reference():
+    text = "#!/usr/bin/env python3\n# closes #91\n"
+
+    violations = guard.find_issue_reference_violations(text)
+
+    assert any("BLOCKED" in v for v, _ in violations)
+
+
+def test_single_letter_unit_requires_no_space_before_it():
+    text = "# see step 3 m of the plan for context\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_shebang_and_encoding_lines_do_not_count_toward_a_comment_run():
+    reason_lines_under_threshold_alone = guard.COMMENT_RUN_LINE_THRESHOLD - 1
+    text = (
+        "#!/usr/bin/env python3\n"
+        "# -*- coding: utf-8 -*-\n"
+        + "\n".join(f"# reason {i}" for i in range(reason_lines_under_threshold_alone))
+        + "\n"
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_trailing_comment_on_an_early_code_line_matching_the_encoding_pattern_is_not_swallowed():
+    text = "import os  # coding: utf-8, added 2026-05-22\nx = 1\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(f.startswith("Comment near line 1") for f, _ in findings)
+
+
+def test_unparseable_edit_fragment_with_oversize_docstring_is_still_flagged():
+    prose_lines = "\n".join(f"        rationale line {i} of the fix" for i in range(40))
+    text = (
+        "    def _apply_fix(self):\n"
+        f'        """\n{prose_lines}\n        """\n'
+        "        return self.value\n"
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 42 lines")
+    assert span == (2, 43)
+
+
+def test_oversize_docstring_after_a_same_line_docstring_is_still_flagged():
+    prose_lines = "\n".join(f"    reason {i}" for i in range(20))
+    text = (
+        'def a():\n'
+        '    """short."""\n'
+        "\n"
+        "def b():\n"
+        f'    """\n{prose_lines}\n    """\n'
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (5, 26)
+
+
+def test_oversize_docstring_after_a_back_to_back_empty_docstring_is_still_flagged():
+    prose_lines = "\n".join(f"    reason {i}" for i in range(20))
+    text = (
+        'def a():\n'
+        '    """"""\n'
+        "\n"
+        "def b():\n"
+        f'    """\n{prose_lines}\n    """\n'
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (5, 26)
+
+
+def test_edit_fragment_starting_with_a_bare_closing_delimiter_is_not_flagged():
+    code_lines = "\n".join(f"    step_{i}()" for i in range(20))
+    text = f'    """\n{code_lines}\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_unterminated_docstring_opener_does_not_fabricate_a_length_finding_or_swallow_a_later_comment():
+    code_lines = "\n".join(f"    step_{i}()" for i in range(20))
+    text = (
+        '    """opens here, never closes in this fragment\n'
+        f"{code_lines}\n"
+        "    # fixed on 2026-05-22\n"
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert not any(f.startswith("Docstring spans") for f, _ in findings)
+    assert any("Comment near line 22" in f for f, _ in findings)
+
+
+def test_unterminated_fstring_docstring_does_not_swallow_a_later_comment():
+    text = 'f"""opens here, never closes\nsome code\nmore code\n# fixed on 2026-05-22\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert not any(f.startswith("Docstring") for f, _ in findings)
+    assert any(f.startswith("Comment near line 4") for f, _ in findings)
+
+
+def _opens_and_closes_on_separate_lines(prefix, body_line):
+    return f'{prefix}"""\n    {body_line}\n    """'
+
+
+def test_prefixed_docstring_does_not_desync_a_later_plain_oversize_docstring():
+    prose = "\n".join(f"    reason {i}" for i in range(20))
+    short_block = _opens_and_closes_on_separate_lines("r", "short prefixed docstring")
+    text = (
+        "def a():\n"
+        f"    {short_block}\n"
+        "\n"
+        "def b():\n"
+        f'    """\n{prose}\n    """\n'
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(f.startswith("Docstring spans") and "near line 7" in f for f, _ in findings)
+
+
+def test_oversize_fstring_docstring_with_an_embedded_delimiter_in_an_interpolation_still_fires():
+    text = (
+        "def f():\n"
+        '    f"""\n'
+        "    reason 0\n"
+        "    reason 1\n"
+        "    reason 2\n"
+        "    reason 3\n"
+        "    reason 4\n"
+        "    reason 5\n"
+        "    reason 6\n"
+        "    reason 7\n"
+        "    {'\"\"\"'}\n"
+        "    reason 8\n"
+        "    reason 9\n"
+        "    reason 10\n"
+        '    """\n'
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(
+        f.startswith("Docstring spans 14 lines") and "near line 2" in f for f, _ in findings
+    )
+
+
+def test_oversize_fstring_docstring_with_a_genuinely_nested_fstring_interpolation_still_fires():
+    text = (
+        "def f():\n"
+        '    f"""\n'
+        "    reason 0\n"
+        "    reason 1\n"
+        "    reason 2\n"
+        "    reason 3\n"
+        "    reason 4\n"
+        "    reason 5\n"
+        "    reason 6\n"
+        "    reason 7\n"
+        "    {f'{1}'}\n"
+        "    reason 8\n"
+        "    reason 9\n"
+        "    reason 10\n"
+        '    """\n'
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(
+        f.startswith("Docstring spans 14 lines") and "near line 2" in f for f, _ in findings
+    )
+
+
+def test_lone_carriage_returns_do_not_desync_token_rows_from_source_rows():
+    prose = "\n".join(f"reason {i}" for i in range(13))
+    text = "a = 1\rb = 2\rc = 3\r\n" + f'"""\n{prose}\n"""\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(
+        f.startswith("Docstring spans 15 lines") and "near line 2" in f for f, _ in findings
+    )
+
+
+def test_oversize_docstring_as_the_literal_first_token_after_a_resync_is_flagged():
+    prose = "\n".join(f"    reason {i}" for i in range(13))
+    text = f"x = 'unterminated\n\"\"\"\n{prose}\n\"\"\"\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(f.startswith("Docstring spans") and "near line 2" in f for f, _ in findings)
+
+
+def test_oversize_assignment_string_after_a_resync_is_not_flagged():
+    prose = "\n".join(f"    reason {i}" for i in range(13))
+    text = f"x = 'unterminated\ny = \"\"\"\n{prose}\n\"\"\"\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_docstring_after_two_resyncs_is_flagged_at_the_right_line():
+    prose = "\n".join(f"    reason {i}" for i in range(20))
+    text = f"x = 'unterminated\ny = 'also unterminated\ndef f():\n    \"\"\"\n{prose}\n    \"\"\"\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(f.startswith("Docstring spans") and "near line 4" in f for f, _ in findings)
+
+
+def test_resync_offsets_accumulate_correctly_across_two_unterminated_strings():
+    run1 = "\n".join(f"# reason {i}" for i in range(5))
+    run2 = "\n".join(f"# reason {i}" for i in range(5, 10))
+    text = f"x = 'unterminated\n{run1}\ny = 'unterminated\n{run2}\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any("starting near line 2" in f for f, _ in findings)
+    assert any("starting near line 8" in f for f, _ in findings)
+
+
+def test_resync_gap_flushes_the_comment_run_so_two_short_runs_dont_merge_into_a_false_positive():
+    text = "# note one\n# note two\n'oops cut here\n# note three\n# note four\n# note five\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_resync_gap_flushes_the_comment_run_so_a_real_finding_keeps_its_own_start_line():
+    text = (
+        "# note one\n"
+        "# note two\n"
+        "'oops cut here\n"
+        "# note three\n"
+        "# note four\n"
+        "# note five\n"
+        "# note six\n"
+        "# note seven\n"
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any("starting near line 4" in f for f, _ in findings)
+    assert not any("starting near line 1" in f for f, _ in findings)
+
+
+def test_resync_is_bounded_and_degrades_past_the_cap():
+    blocks = "".join(
+        f"bad_{i} = 'unterminated\n# reason {i}, added 2026-05-22\n" for i in range(70)
+    )
+    text = blocks + "# fixed on 2026-05-22\n"
+
+    with patch.object(guard, "_MAX_RESYNC_PASSES", 5):
+        low_cap_findings = guard.find_misplaced_rationale(text)
+    with patch.object(guard, "_MAX_RESYNC_PASSES", 500):
+        high_cap_findings = guard.find_misplaced_rationale(text)
+
+    assert len(low_cap_findings) == 5
+    assert len(high_cap_findings) == 70
+
+
+def test_resync_fails_open_on_a_malformed_tokenizer_error_shape():
+    with patch(
+        "tokenize.generate_tokens",
+        side_effect=tokenize.TokenError("no position info here"),
+    ):
+        findings = guard.find_misplaced_rationale("x = 1\n")
+
+    assert findings == []
+
+
+def test_dangling_open_bracket_fails_open_without_crashing():
+    text = "foo(\n# reason for the open paren, added 2026-05-22\nbar,\nbaz,\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(f.startswith("Comment near line 2") for f, _ in findings)
+
+
+def test_oversize_docstring_after_a_dangling_open_bracket_is_still_flagged():
+    prose = "\n".join(f"    reason {i}" for i in range(20))
+    text = (
+        "foo(\n"
+        "bar,\n"
+        "baz,\n"
+        "def b():\n"
+        f'    """\n{prose}\n    """\n'
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert any(f.startswith("Docstring spans") and "near line 5" in f for f, _ in findings)
+
+
+def test_e2e_dangling_open_bracket_produces_no_crash_and_no_traceback_on_stdout():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "content": "foo(\nbar,\nbaz,\n",
+        },
+    }
+
+    result = _run_hook(payload)
+
+    assert result.returncode == 0
+    assert "Traceback" not in result.stdout
+
+
+@pytest.mark.parametrize("exc, num_lines", [
+    (tokenize.TokenError("no args"), 10),
+    (tokenize.TokenError("bad pos", ("not", "a", "tuple")), 10),
+    (tokenize.TokenError("non-int row", (1.5, 2)), 10),
+    (tokenize.TokenError("row zero", (0, 5)), 10),
+    (tokenize.TokenError("row past eof", (999, 5)), 10),
+])
+def test_trustworthy_row_returns_none_for_a_malformed_or_out_of_range_shape(exc, num_lines):
+    assert guard._trustworthy_row(exc, num_lines) is None
+
+
+def test_trustworthy_row_reads_lineno_for_syntax_errors():
+    exc = SyntaxError("bad indent")
+    exc.lineno = 3
+
+    assert guard._trustworthy_row(exc, 10) == 3
+
+
+def test_oversize_leading_module_docstring_is_flagged_no_exemption():
+    prose_lines = "\n".join(f"reason {i} for this fixture existing" for i in range(20))
+    text = f'"""\n{prose_lines}\n"""\nimport pytest\n\n\ndef fixture():\n    pass\n'
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Docstring spans 22 lines")
+    assert span == (1, 22)
+
+
+def test_comment_run_of_exactly_the_threshold_line_count_is_not_flagged():
+    line_count = guard.COMMENT_RUN_LINE_THRESHOLD
+    text = "\n".join(f"# reason line {i}" for i in range(line_count)) + "\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+def test_oversize_comment_run_is_flagged():
+    line_count = guard.COMMENT_RUN_LINE_THRESHOLD + 1
+    text = "\n".join(f"# reason line {i}" for i in range(line_count)) + "\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(f"Comment run of {line_count} '#' lines")
+    assert span == (1, line_count)
+
+
+
+
+def test_rename_phrasing_only_appears_for_comment_runs_not_docstrings():
+    comment_text = "\n".join(f"# reason line {i}" for i in range(5)) + "\n"
+    docstring_lines = "\n".join(f"reason {i}" for i in range(13))
+    docstring_text = f'"""\n{docstring_lines}\n"""\n'
+
+    comment_findings = guard.find_misplaced_rationale(comment_text)
+    docstring_findings = guard.find_misplaced_rationale(docstring_text)
+
+    assert any("rename" in f.lower() for f, _ in comment_findings)
+    assert not any("rename" in f.lower() for f, _ in docstring_findings)
+
+
+def test_comment_run_with_a_paragraph_break_is_still_flagged():
+    line_count = guard.COMMENT_RUN_LINE_THRESHOLD + 1
+    text = (
+        "# reason line 0\n"
+        "# reason line 1\n"
+        "\n"
+        "# reason line 2\n"
+        "# reason line 3\n"
+        "# reason line 4\n"
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(f"Comment run of {line_count} '#' lines")
+    assert span == (1, 6)
+
+
+def test_comment_run_span_covers_a_paragraph_break_not_just_the_hash_lines():
+    text = (
+        "# reason line 0\n"
+        "# reason line 1\n"
+        "\n"
+        "# reason line 2\n"
+        "# reason line 3\n"
+        "# reason line 4\n"
+        "x = 1\n"
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    _, span = next(f for f in findings if f[0].startswith("Comment run"))
+    assert span == (1, 6)
+
+
+def test_comment_run_message_does_not_claim_the_lines_are_consecutive_across_a_paragraph_break():
+    text = (
+        "# reason line 0\n"
+        "# reason line 1\n"
+        "\n"
+        "# reason line 2\n"
+        "# reason line 3\n"
+        "# reason line 4\n"
+        "x = 1\n"
+    )
+
+    findings = guard.find_misplaced_rationale(text)
+
+    message, _ = next(f for f in findings if f[0].startswith("Comment run"))
+    assert "consecutive" not in message
+
+
+def test_short_comment_run_is_not_flagged():
+    text = "\n".join(f"# reason line {i}" for i in range(4)) + "\n"
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert findings == []
+
+
+
+def test_docstring_on_a_test_function_is_a_blocking_violation():
+    source = 'def test_thing():\n    """Checks the thing."""\n    assert True\n'
+
+    assert guard.find_blocking_violations(source, "/repo/tests/test_thing.py")
+
+
+def test_docstring_on_a_test_function_violation_row_is_where_the_docstring_opens():
+    source = 'def test_thing():\n    """Checks the thing."""\n    assert True\n'
+
+    violations = guard.find_blocking_violations(source, "/repo/tests/test_thing.py")
+
+    message, span = next(v for v in violations if "opens with a docstring" in v[0])
+    assert message.startswith("BLOCKED - 'test_thing' near line 2 opens with a docstring")
+    assert span == (2, 2)
+
+
+def test_e2e_test_docstring_denies_the_edit():
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/tests/test_thing.py",
+            "content": 'def test_thing():\n    """Checks the thing."""\n    assert True\n',
+        },
+    }
+
+    result = _run_hook(payload)
+
+    output = json.loads(result.stdout)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "test name" in output["hookSpecificOutput"]["permissionDecisionReason"]
+    assert "/comment-intent-guard:self-documenting-code" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_docstring_on_a_non_test_function_is_not_a_blocking_violation():
+    source = 'def parse_rows(raw):\n    """Rows in file order; raises on a short header."""\n    return raw\n'
+
+    assert guard.find_blocking_violations(source, "/repo/src/parse.py") == []
+
+
+def test_external_id_in_a_module_docstring_is_a_blocking_violation():
+    source = '"""MG-1 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, "/repo/tests/test_gap.py")
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'MG-1' in a docstring near line 1")
+    assert span == (1, 1)
+
+
+@pytest.mark.parametrize("standard", ["UTF-8", "SHA-256", "AES-256", "IPV-6"])
+def test_standards_identifier_in_a_docstring_is_not_an_external_id(standard):
+    source = f'"""Decodes the payload as {standard} before parsing."""\nVALUE = 1\n'
+
+    assert guard.find_blocking_violations(source, "/repo/src/decode.py") == []
+
+
+def test_external_id_in_a_test_function_name_is_a_blocking_violation():
+    source = 'async def test_mg1_cool_demand_in_heat_season(hass):\n    assert True\n'
+
+    violations = guard.find_blocking_violations(source, "/repo/tests/test_gap.py")
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'mg1' in a test name near line 1")
+    assert span == (1, 1)
+
+
+def test_external_id_in_the_filename_is_a_blocking_violation():
+    source = "VALUE = 1\n"
+
+    violations = guard.find_blocking_violations(
+        source, "/repo/tests/templates/test_desired_panel_setpoint_sp6.py"
+    )
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - external id 'sp6' in the filename near line 1")
+    assert span == (1, 1)
+
+
+def test_standards_token_in_the_filename_is_not_an_external_id():
+    assert guard.find_blocking_violations("VALUE = 1\n", "/repo/tests/test_sha256_digest.py") == []
+
+
+def test_external_id_inside_a_plain_string_literal_is_not_a_blocking_violation():
+    source = 'CASE_LABEL = "MG-1 golden case"\n'
+
+    assert guard.find_blocking_violations(source, "/repo/src/labels.py") == []
+
+
+def test_external_id_in_a_triple_quoted_assigned_string_is_not_a_blocking_violation():
+    source = 'CASE_LABEL = """MG-1 golden case"""\n'
+
+    assert guard.find_blocking_violations(source, "/repo/src/labels.py") == []
+
+
+def test_comment_beside_a_magic_literal_is_flagged_as_advisory():
+    source = "TIMEOUT = 300  # five minutes\n"
+
+    findings = guard.find_misplaced_rationale(source)
+
+    assert any("named constant" in f for f, _ in findings)
+
+
+def test_magic_literal_span_is_the_single_line_it_sits_on():
+    source = "TIMEOUT = 300  # five minutes\n"
+
+    findings = guard.find_misplaced_rationale(source)
+
+    _, span = next(f for f in findings if "named constant" in f[0])
+    assert span == (1, 1)
+
+
+def test_comment_beside_a_subscript_index_is_not_flagged_as_a_magic_literal():
+    source = "def _reported_row(exc):\n    return exc.args[1][0]  # TokenError: row is positional in .args\n"
+
+    findings = guard.find_misplaced_rationale(source)
+
+    assert not any("named constant" in f for f, _ in findings)
+
+
+def test_comment_and_code_lines_are_counted_separately():
+    source = "# leading note\nVALUE = 1  # trailing note\n\nOTHER = 2\n"
+
+    assert guard.count_comment_and_code_lines(source) == (2, 2)
+
+
+def test_aggregate_density_above_the_peer_baseline_is_flagged():
+    finding = guard.aggregate_density_finding(comment_lines=30, code_lines=100)
+
+    assert finding is not None
+    assert "18" in finding
+
+
+def test_aggregate_density_at_the_peer_baseline_is_not_flagged():
+    assert guard.aggregate_density_finding(comment_lines=10, code_lines=100) is None
+
+
+def test_aggregate_density_is_not_flagged_before_the_sample_is_large_enough():
+    assert guard.aggregate_density_finding(comment_lines=3, code_lines=4) is None
+
+
+def test_recorded_edits_accumulate_across_invocations(tmp_path):
+    state = tmp_path / "state.json"
+
+    guard.record_edit(state, "session-a", comment_lines=2, code_lines=10)
+    totals = guard.record_edit(state, "session-a", comment_lines=3, code_lines=20)
+
+    assert totals == (5, 30)
+
+
+def test_recorded_edits_are_scoped_per_session(tmp_path):
+    state = tmp_path / "state.json"
+
+    guard.record_edit(state, "session-a", comment_lines=9, code_lines=9)
+    totals = guard.record_edit(state, "session-b", comment_lines=1, code_lines=4)
+
+    assert totals == (1, 4)
+
+
+def test_a_corrupt_state_file_starts_fresh_and_warns(tmp_path, capsys):
+    state = tmp_path / "state.json"
+    state.write_text("{not json")
+
+    totals = guard.record_edit(state, "session-a", comment_lines=1, code_lines=2)
+
+    assert totals == (1, 2)
+    assert "comment_intent_guard" in capsys.readouterr().err
+
+
+def _dense_python(code_lines):
+    return "".join(f"# note {i}\nVALUE_{i} = {i + 2}\n" for i in range(code_lines))
+
+
+def test_e2e_aggregate_density_advisory_fires_once_the_session_total_drifts(tmp_path):
+    import os as _os
+    env = dict(_os.environ, COMMENT_INTENT_GUARD_STATE=str(tmp_path / "state.json"))
+    payload = {
+        "session_id": "session-a",
+        "tool_name": "Write",
+        "tool_input": {"file_path": "/repo/src/thing.py", "content": _dense_python(30)},
+    }
+
+    _run_hook(payload, env=env)
+    result = _run_hook(payload, env=env)
+
+    output = json.loads(result.stdout)
+    assert "Aggregate comment density" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_state_keeps_only_the_most_recent_sessions(tmp_path):
+    state = tmp_path / "state.json"
+
+    for n in range(guard.MAX_TRACKED_SESSIONS + 5):
+        guard.record_edit(state, f"session-{n}", comment_lines=1, code_lines=1)
+
+    kept = json.loads(state.read_text())
+    assert len(kept) == guard.MAX_TRACKED_SESSIONS
+    assert "session-0" not in kept
+    assert f"session-{guard.MAX_TRACKED_SESSIONS + 4}" in kept
+
+
+def test_a_returning_session_is_not_evicted_by_newer_ones(tmp_path):
+    state = tmp_path / "state.json"
+    guard.record_edit(state, "long-runner", comment_lines=1, code_lines=1)
+
+    for n in range(guard.MAX_TRACKED_SESSIONS - 1):
+        guard.record_edit(state, f"other-{n}", comment_lines=1, code_lines=1)
+        guard.record_edit(state, "long-runner", comment_lines=0, code_lines=1)
+
+    assert "long-runner" in json.loads(state.read_text())
+
+
+def test_test_function_docstrings_are_counted_across_a_module():
+    source = (
+        'def test_one():\n    """prose"""\n    assert True\n\n\n'
+        'def test_two():\n    assert True\n\n\n'
+        'def helper():\n    """contract"""\n    return 1\n\n\n'
+        'def test_three():\n    """more prose"""\n    assert True\n'
+    )
+
+    assert guard.count_test_function_docstrings(source) == 2
+
+
+def test_yaml_five_line_hash_run_is_flagged():
+    text = (
+        "# first reason for this shape\n"
+        "# second reason for this shape\n"
+        "# third reason for this shape\n"
+        "# fourth reason for this shape\n"
+        "# fifth reason for this shape\n"
+        "key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    message, span = next(f for f in findings if f[0].startswith("Comment run"))
+    assert message.startswith("Comment run of 5 '#' lines")
+    assert span == (1, 5)
+
+
+def test_yaml_trailing_comment_with_evidence_marker_is_flagged():
+    text = "timeout: 8  # fixed on 2026-05-22 (issue #32)\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith("Comment near line 1 contains a date, measurement, or SHA")
+    assert span == (1, 1)
+
+
+def test_yaml_hash_immediately_after_a_digit_is_a_literal_scalar_not_a_comment():
+    text = "val: 100#fixed on 2026-05-22\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_hash_inside_a_quoted_string_is_inert_even_after_whitespace():
+    text = 'title: "Status # 5 update on 2026-05-22"\n'
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_hash_inside_a_block_scalar_is_inert_regardless_of_whitespace():
+    text = (
+        "description: >-\n"
+        "  #100 first line\n"
+        "  #101 second line\n"
+        "  #102 third line\n"
+        "  #103 fourth line\n"
+        "  #104 fifth line\n"
+        "next_key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_jinja_comment_block_over_8_lines_is_flagged():
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD + 1
+    body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
+    text = f"value_template: >-\n  {{#\n{body_lines}\n  #}}\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert any("Jinja" in f and "block" in f for f, _ in findings)
+
+
+def test_yaml_jinja_block_span_covers_the_opening_and_closing_markers():
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD + 1
+    body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
+    text = f"value_template: >-\n  {{#\n{body_lines}\n  #}}\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    message, span = next(f for f in findings if "Jinja" in f[0] and "block" in f[0])
+    assert message.startswith(
+        f"Jinja '{{# #}}' block spans {body_line_count + 2} lines "
+        f"(over the {guard.JINJA_BLOCK_LINE_THRESHOLD}-line threshold) "
+        "starting near line 2"
+    )
+    assert span == (2, body_line_count + 3)
+
+
+def test_jinja_comment_block_of_exactly_the_threshold_line_count_is_not_flagged():
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD - 2
+    body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
+    text = f"{{#\n{body_lines}\n#}}\n{{{{ value }}}}\n"
+
+    findings = guard.find_jinja_findings(text)
+
+    assert findings == []
+
+
+def test_find_jinja_findings_flags_an_oversize_standalone_jinja_comment_block():
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD + 1
+    body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
+    text = f"{{#\n{body_lines}\n#}}\n{{{{ value }}}}\n"
+
+    findings = guard.find_jinja_findings(text)
+
+    assert len(findings) == 1
+    message, span = findings[0]
+    assert message.startswith(
+        f"Jinja '{{# #}}' block spans {body_line_count + 2} lines "
+        f"(over the {guard.JINJA_BLOCK_LINE_THRESHOLD}-line threshold) "
+        "starting near line 1"
+    )
+    assert span == (1, body_line_count + 2)
+
+
+def test_find_jinja_findings_is_empty_for_a_short_standalone_jinja_comment():
+    text = "{# guards against the hold flipping mid-cycle #}\n{{ value }}\n"
+
+    assert guard.find_jinja_findings(text) == []
+
+
+def test_find_jinja_issue_reference_violations_blocks_a_standalone_comment_with_an_issue_reference():
+    text = "{# issue #91: the direction can flip while the hold is active #}\n"
+
+    violations = guard.find_jinja_issue_reference_violations(text)
+
+    assert len(violations) == 1
+    message, span = violations[0]
+    assert message.startswith("BLOCKED - Jinja comment block near line 1 contains an issue reference")
+    assert span == (1, 1)
+
+
+def test_find_jinja_issue_reference_violations_is_empty_for_a_standalone_comment_with_no_issue_reference():
+    text = "{# guards against the hold flipping mid-cycle #}\n"
+
+    assert guard.find_jinja_issue_reference_violations(text) == []
+
+
+def test_yaml_jinja_comment_block_of_8_lines_or_fewer_is_not_flagged():
+    body_line_count = guard.JINJA_BLOCK_LINE_THRESHOLD - 2
+    body_lines = "\n".join(f"  reason {i}" for i in range(body_line_count))
+    text = f"value_template: >-\n  {{#\n{body_lines}\n  #}}\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_two_separate_jinja_blocks_dont_swallow_a_real_comment_run_between_them():
+    text = (
+        "{# first block #}\n"
+        "normal_key: value\n"
+        "# real comment one\n"
+        "# real comment two\n"
+        "# real comment three\n"
+        "# real comment four\n"
+        "# real comment five\n"
+        "other_key: value\n"
+        "{# second block #}\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert any("Comment run of 5" in f for f, _ in findings)
+    assert not any("Jinja" in f for f, _ in findings)
+
+
+def test_yaml_jinja_block_sharing_a_line_with_real_content_does_not_extend_a_comment_run():
+    text = (
+        "value: {{ x }} {# note #}\n"
+        "# real comment one\n"
+        "# real comment two\n"
+        "# real comment three\n"
+        "# real comment four\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_description_block_over_12_lines_is_flagged():
+    over_threshold_line_count = guard.YAML_DESCRIPTION_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"  reason {i}" for i in range(over_threshold_line_count))
+    text = f"description: >-\n{prose_lines}\nnext_key: value\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert any("Description" in f and str(over_threshold_line_count) in f for f, _ in findings)
+
+
+def test_yaml_description_block_span_includes_the_header_line():
+    over_threshold_line_count = guard.YAML_DESCRIPTION_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"  reason {i}" for i in range(over_threshold_line_count))
+    text = f"description: >-\n{prose_lines}\nnext_key: value\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    _, span = next(f for f in findings if "Description" in f[0])
+    assert span == (1, over_threshold_line_count + 1)
+
+
+def test_yaml_description_block_message_points_at_the_header_line():
+    over_threshold_line_count = guard.YAML_DESCRIPTION_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"  reason {i}" for i in range(over_threshold_line_count))
+    text = f"description: >-\n{prose_lines}\nnext_key: value\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    message, _ = next(f for f in findings if "Description" in f[0])
+    assert "starting near line 1." in message
+
+
+def test_yaml_description_block_of_12_lines_or_fewer_is_not_flagged():
+    prose_lines = "\n".join(f"  reason {i}" for i in range(guard.YAML_DESCRIPTION_LINE_THRESHOLD))
+    text = f"description: >-\n{prose_lines}\nnext_key: value\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_short_description_block_with_an_evidence_marker_is_flagged():
+    text = "description: >-\n  fixed on 2026-05-22 after the incident\nnext_key: value\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == [(guard._evidence_finding("Description block scalar", 1), (1, 2))]
+
+
+def test_yaml_dead_config_run_of_exactly_the_threshold_line_count_still_blocks_an_issue_reference():
+    text = "# a: 1\n# b: 2\n# c: 3\n# see #12\nkey: value\n"
+
+    violations = guard.find_yaml_issue_reference_violations(text)
+
+    assert violations == [(guard._issue_reference_violation("Comment", 0), (1, 4))]
+
+
+def test_yaml_long_commented_out_config_run_gets_the_dead_config_message():
+    text = (
+        "# sensor:\n"
+        "#   - platform: template\n"
+        "#     sensors:\n"
+        "#       old_pool_temp:\n"
+        '#         value_template: "{{ states(\'sensor.pool_raw\') }}"\n'
+        "key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert any("dead config" in f.lower() for f, _ in findings)
+    assert not any("design doc" in f for f, _ in findings)
+
+
+def test_yaml_dead_config_finding_span_is_exact():
+    text = (
+        "# sensor:\n"
+        "#   - platform: template\n"
+        "#     sensors:\n"
+        "#       old_pool_temp:\n"
+        '#         value_template: "{{ states(\'sensor.pool_raw\') }}"\n'
+        "key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    message, span = next(f for f in findings if "dead config" in f[0].lower())
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    assert message.startswith(
+        f"Comment run of {over_threshold_line_count} '#' lines "
+        f"(over the {guard.YAML_COMMENT_RUN_LINE_THRESHOLD}-line threshold) "
+        "starting near line 1 reads as commented-out YAML"
+    )
+    assert span == (1, 5)
+
+
+def test_yaml_dead_config_message_does_not_claim_the_lines_are_consecutive():
+    text = (
+        "# sensor:\n"
+        "#   - platform: template\n"
+        "#     sensors:\n"
+        "#       old_pool_temp:\n"
+        '#         value_template: "{{ states(\'sensor.pool_raw\') }}"\n'
+        "key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    message = next(f for f, _ in findings if "dead config" in f.lower())
+    assert "consecutive" not in message
+
+
+def test_yaml_comment_run_message_does_not_claim_the_lines_are_consecutive():
+    prose_lines = "\n".join(f"# reason {i}" for i in range(guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1))
+    text = f"{prose_lines}\nkey: value\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    message = next(f for f, _ in findings if f.startswith("Comment run"))
+    assert "consecutive" not in message
+
+
+def _run_cli(args, cwd=None):
+    return subprocess.run(
+        [sys.executable, str(_MODULE_PATH), *args],
+        input="",
+        capture_output=True,
+        text=True,
+        timeout=10,
+        cwd=cwd,
+    )
+
+
+def test_cli_all_mode_on_yaml_file_reports_findings_and_exits_nonzero(tmp_path):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text(
+        "# first reason for this shape\n"
+        "# second reason for this shape\n"
+        "# third reason for this shape\n"
+        "# fourth reason for this shape\n"
+        "# fifth reason for this shape\n"
+        "key: value\n"
+    )
+
+    result = _run_cli(["--all", str(yaml_file)])
+
+    assert result.returncode == 1
+    assert "Comment run of 5" in result.stdout
+
+
+def test_cli_all_mode_on_yaml_file_with_an_issue_reference_denies_and_exits_bright_line(tmp_path):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text("timeout: 8  # closes #91\n")
+
+    result = _run_cli(["--all", str(yaml_file)])
+
+    assert result.returncode == guard._EXIT_BRIGHT_LINE
+    assert "issue reference" in result.stdout
+
+
+def test_cli_all_mode_on_jinja_file_with_an_oversize_comment_block_reports_findings(tmp_path):
+    jinja_file = tmp_path / "direction.jinja"
+    body = "\n".join(f"  reason {i}" for i in range(guard.JINJA_BLOCK_LINE_THRESHOLD + 1))
+    jinja_file.write_text(f"{{#\n{body}\n#}}\n{{{{ value }}}}\n")
+
+    result = _run_cli(["--all", str(jinja_file)])
+
+    assert result.returncode == 1
+    assert "Jinja" in result.stdout and "block" in result.stdout
+
+
+def test_cli_all_mode_with_no_findings_exits_zero(tmp_path):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text("key: value\n")
+
+    result = _run_cli(["--all", str(yaml_file)])
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == ""
+
+
+def test_cli_all_mode_on_python_file_routes_to_the_python_analyser(tmp_path):
+    py_file = tmp_path / "thing.py"
+    lines = "\n".join(f"    reason {i}" for i in range(13))
+    py_file.write_text(f'"""\n{lines}\n"""\n')
+
+    result = _run_cli(["--all", str(py_file)])
+
+    assert result.returncode == 1
+    assert "docstring" in result.stdout.lower()
+
+
+def _init_git_repo(repo_dir):
+    subprocess.run(["git", "init", "-q"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo_dir, check=True)
+    subprocess.run(["git", "config", "commit.gpgsign", "false"], cwd=repo_dir, check=True)
+
+
+def test_cli_base_mode_excludes_findings_on_preexisting_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text(
+        "# old reason one\n"
+        "# old reason two\n"
+        "# old reason three\n"
+        "# old reason four\n"
+        "# old reason five\n"
+        "old_key: value\n"
+    )
+    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    yaml_file.write_text(
+        "# old reason one\n"
+        "# old reason two\n"
+        "# old reason three\n"
+        "# old reason four\n"
+        "# old reason five\n"
+        "old_key: value\n"
+        "# new reason one\n"
+        "# new reason two\n"
+        "# new reason three\n"
+        "# new reason four\n"
+        "# new reason five\n"
+        "new_key: value\n"
+    )
+
+    base_result = _run_cli(["--base", base_sha, "config.yaml"], cwd=tmp_path)
+    all_result = _run_cli(["--all", "config.yaml"], cwd=tmp_path)
+
+    assert "starting near line 7." in base_result.stdout
+    assert "starting near line 1." not in base_result.stdout
+
+    assert "starting near line 1." in all_result.stdout
+    assert "starting near line 7." in all_result.stdout
+
+
+def test_yaml_whole_line_comment_with_evidence_marker_is_flagged_below_run_threshold():
+    text = "# fixed on 2026-05-22 after the incident\nkey: value\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == [(guard._evidence_finding("Comment", 0), (1, 1))]
+
+
+def test_yaml_block_scalar_with_an_explicit_indentation_indicator_is_still_inert():
+    text = (
+        "description: |2\n"
+        "  #100 first line\n"
+        "  #101 second line\n"
+        "  #102 third line\n"
+        "  #103 fourth line\n"
+        "  #104 fifth line\n"
+        "next_key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_block_scalar_with_a_hyphenated_key_is_still_inert():
+    text = (
+        "friendly-name: >-\n"
+        "  #100 first line\n"
+        "  #101 second line\n"
+        "  #102 third line\n"
+        "  #103 fourth line\n"
+        "  #104 fifth line\n"
+        "next_key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_block_scalar_with_a_quoted_key_is_still_inert():
+    text = (
+        '"description": >-\n'
+        "  #100 first line\n"
+        "  #101 second line\n"
+        "  #102 third line\n"
+        "  #103 fourth line\n"
+        "  #104 fifth line\n"
+        "next_key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_yaml_block_scalar_with_a_quoted_description_key_still_gets_length_checked():
+    over_threshold_line_count = guard.YAML_DESCRIPTION_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"  reason {i}" for i in range(over_threshold_line_count))
+    text = f'"description": >-\n{prose_lines}\nnext_key: value\n'
+
+    findings = guard.find_yaml_findings(text)
+
+    assert any("Description" in f and str(over_threshold_line_count) in f for f, _ in findings)
+
+
+def test_yaml_sequence_item_block_scalar_uses_the_keys_indent_not_the_dashes():
+    text = (
+        "- description: >-\n"
+        "    reason 0\n"
+        "    reason 1\n"
+        "  # comment one\n"
+        "  # comment two\n"
+        "  # comment three\n"
+        "  # comment four\n"
+        "  # comment five\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert any("Comment run of 5" in f for f, _ in findings)
+
+
+def test_yaml_escaped_double_quote_does_not_prematurely_close_the_string():
+    text = 'a: "he said \\" # still in string on 2026-05-22"\n'
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == []
+
+
+def test_hash_after_an_escaped_quote_inside_a_double_quoted_value_is_not_a_comment():
+    line = 'k: "a\\" # b"  # c'
+
+    assert guard._yaml_comment_start(line) == line.rindex("#")
+
+
+def test_hash_after_a_double_backslash_inside_a_double_quoted_value_is_a_comment():
+    line = 'k: "a\\\\" # c'
+
+    assert guard._yaml_comment_start(line) == line.index("#")
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        pytest.param('k: " \'x # y"  # c', id="apostrophe_inside_double_quoted_value"),
+        pytest.param('"a # b" # c', id="double_quote_opens_at_column_zero"),
+        pytest.param("'a # b' # c", id="single_quote_opens_at_column_zero"),
+        pytest.param('k: value # comment "quoted" text', id="quote_after_the_comment_hash"),
+        pytest.param("ab:'c # d'  # e", id="opener_check_looks_at_the_immediately_preceding_character"),
+    ],
+)
+def test_yaml_comment_start_finds_the_real_hash(line):
+    assert guard._yaml_comment_start(line) == line.rindex("#")
+
+
+def test_yaml_comment_start_returns_none_for_an_unterminated_double_quote():
+    line = 'k: "unterminated # not a comment'
+
+    assert guard._yaml_comment_start(line) is None
+
+
+def test_closes_double_quote_treats_a_lone_leading_backslash_as_an_escape():
+    line = '\\"'
+
+    assert guard._closes_double_quote(line, 1) is False
+
+
+def test_closes_double_quote_treats_an_even_backslash_run_as_a_real_close():
+    line = '\\\\"'
+
+    assert guard._closes_double_quote(line, 2) is True
+
+
+def test_yaml_apostrophe_in_a_plain_scalar_does_not_suppress_a_trailing_comment():
+    text = "name: the neighbour's house  # fixed on 2026-05-22\n"
+
+    findings = guard.find_yaml_findings(text)
+
+    assert findings == [(guard._evidence_finding("Comment", 0), (1, 1))]
+
+
+def test_yaml_explanatory_prose_run_is_not_misclassified_as_dead_config():
+    text = (
+        "# Why: the sensor kept dropping readings during storms\n"
+        "# Cause: the ESP32 brownouts under RF interference near the pump\n"
+        "# Fix: added a decoupling capacitor across the 3.3V rail\n"
+        "# Verified: stable for two weeks after the fix\n"
+        "# Related: see also the pump controller firmware notes\n"
+        "key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert not any("dead config" in f.lower() for f, _ in findings)
+    assert any("design doc" in f for f, _ in findings)
+
+
+def test_yaml_dead_config_run_does_not_also_get_a_design_doc_evidence_finding():
+    text = (
+        "# sensor:\n"
+        "#   - platform: template\n"
+        "#     sensors:\n"
+        "#       old_pool_temp:  # removed 2026-05-22\n"
+        '#         value_template: "{{ states(\'sensor.pool_raw\') }}"\n'
+        "key: value\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert any("dead config" in f.lower() for f, _ in findings)
+    assert not any("move it to the issue" in f for f, _ in findings)
+
+
+def test_cli_all_mode_skips_a_non_utf8_file_and_keeps_processing_others(tmp_path):
+    bad_file = tmp_path / "bad.yaml"
+    bad_file.write_bytes(b"key: \xff\xfe not valid utf-8\n")
+    good_file = tmp_path / "config.yaml"
+    good_file.write_text(
+        "# first reason for this shape\n"
+        "# second reason for this shape\n"
+        "# third reason for this shape\n"
+        "# fourth reason for this shape\n"
+        "# fifth reason for this shape\n"
+        "key: value\n"
+    )
+
+    result = _run_cli(["--all", str(bad_file), str(good_file)])
+
+    assert "Traceback" not in result.stdout
+    assert "Traceback" not in result.stderr
+    assert "Comment run of 5" in result.stdout
+    assert "bad.yaml" in result.stderr
+    assert result.returncode == 4
+
+
+def test_cli_exits_4_when_the_only_file_cannot_be_read(tmp_path):
+    missing_file = tmp_path / "does_not_exist.yaml"
+
+    result = _run_cli(["--all", str(missing_file)])
+
+    assert result.returncode == 4
+
+
+def test_added_line_numbers_warns_and_returns_none_when_git_is_not_on_path(capsys):
+    with patch("subprocess.run", side_effect=FileNotFoundError("git not found")):
+        result = guard._added_line_numbers("HEAD", "some.yaml")
+
+    assert result is None
+    assert "comment_intent_guard" in capsys.readouterr().err
+
+
+def test_added_line_numbers_map_handles_a_tracked_file_with_a_space_in_its_name(tmp_path):
+    _init_git_repo(tmp_path)
+    spaced_file = tmp_path / "my file.py"
+    spaced_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "my file.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    spaced_file.write_text("x = 1\ny = 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(spaced_file)])
+
+    assert added[str(spaced_file)] == {2}
+
+
+def test_added_line_numbers_map_handles_a_tracked_file_reached_through_a_symlinked_directory(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    target.write_text("x = 1\ny = 2\n")
+
+    link = tmp_path / "link"
+    link.symlink_to(tmp_path, target_is_directory=True)
+    path_via_link = str(link / "a.py")
+
+    added = guard._added_line_numbers_map("HEAD", [path_via_link])
+
+    assert added[path_via_link] == {2}
+
+
+def test_added_line_numbers_map_does_not_let_a_symlink_pointing_outside_the_repo_break_its_group(tmp_path):
+    _init_git_repo(tmp_path)
+    a_target = tmp_path / "a.yaml"
+    a_target.write_text("x: 1\n")
+    outside_dir = tmp_path.parent / "outside"
+    outside_dir.mkdir(exist_ok=True)
+    outside_file = outside_dir / "x.yaml"
+    outside_file.write_text("y: 1\n")
+    ext_link = tmp_path / "ext.yaml"
+    ext_link.symlink_to(os.path.relpath(outside_file, tmp_path))
+    subprocess.run(["git", "add", "a.yaml", "ext.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    a_target.write_text("x: 1\ny: 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(a_target), str(ext_link)], repo_root=str(tmp_path))
+
+    assert added[str(a_target)] == {2}
+
+
+def test_added_line_numbers_map_handles_a_tracked_file_with_a_non_ascii_name(tmp_path):
+    _init_git_repo(tmp_path)
+    cafe_file = tmp_path / "café.py"
+    cafe_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "café.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    cafe_file.write_text("x = 1\ny = 2\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(cafe_file)])
+
+    assert added[str(cafe_file)] == {2}
+
+
+def test_added_line_numbers_map_keeps_later_hunks_after_a_body_line_that_looks_like_a_diff_header(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "thing.py"
+    target.write_text("a = 1\nb = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\ni = 9\nj = 10\n")
+    subprocess.run(["git", "add", "thing.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    target.write_text(
+        "a = 1\n"
+        "++ this line starts with a plus-plus-space\n"
+        "b = 2\nc = 3\nd = 4\ne = 5\nf = 6\ng = 7\nh = 8\ni = 9\n"
+        "another appended line\n"
+        "j = 10\n"
+    )
+
+    added = guard._added_line_numbers_map("HEAD", [str(target)])
+
+    assert added[str(target)] == {2, 11}
+
+
+def test_added_line_numbers_map_untracked_file_with_a_space_in_its_name_returns_none(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "placeholder.txt").write_text("x\n")
+    subprocess.run(["git", "add", "placeholder.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    untracked_file = tmp_path / "new file.yaml"
+    untracked_file.write_text("key: value\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(untracked_file)])
+
+    assert added[str(untracked_file)] is None
+
+
+def test_added_line_numbers_on_an_untracked_file_returns_none(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "placeholder.txt").write_text("x\n")
+    subprocess.run(["git", "add", "placeholder.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    untracked_file = tmp_path / "new_config.yaml"
+    untracked_file.write_text("key: value\n")
+
+    added = guard._added_line_numbers("HEAD", str(untracked_file))
+
+    assert added is None
+
+
+def test_added_line_numbers_map_skips_status_for_tracked_files_without_a_repo_root(tmp_path):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    for target in targets:
+        target.write_text("x = 1\ny = 2\n")
+
+    real_run = subprocess.run
+    calls = []
+
+    def _counting_run(args, **kwargs):
+        calls.append(args)
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_counting_run):
+        added = guard._added_line_numbers_map(
+            "HEAD", [str(target) for target in targets], files_are_tracked=True
+        )
+
+    assert added == {str(target): {2} for target in targets}
+    status_calls = [call for call in calls if "status" in call]
+    assert len(status_calls) == 0
+
+
+def test_added_line_numbers_map_warns_and_degrades_the_whole_group_when_diff_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    added = guard._added_line_numbers_map("nosuchref", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "git diff against nosuchref failed" in stderr
+    assert "exit 128" in stderr
+    for target in targets:
+        assert str(target) in stderr
+
+
+def test_added_line_numbers_map_warns_and_degrades_a_single_chunk_group_when_status_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_status(args, **kwargs):
+        if "status" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake status failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_status):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "git status failed" in stderr
+    assert "fake status failure" in stderr
+    assert "exit 1" in stderr
+
+
+def test_added_line_numbers_map_warns_and_degrades_a_single_chunk_group_when_status_raises_oserror(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_status(args, **kwargs):
+        if "status" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_status):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "git status" in stderr
+    assert "OSError" in stderr
+    for target in targets:
+        assert str(target) in stderr
+
+
+def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_raises_oserror(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_rev_parse(args, **kwargs):
+        if "rev-parse" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_rev_parse):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "rev-parse" in stderr
+    assert "OSError" in stderr
+    assert str(tmp_path) in stderr
+
+
+def test_added_line_numbers_map_degrades_the_group_when_git_toplevel_exits_non_zero(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    real_run = subprocess.run
+
+    def _fail_rev_parse(args, **kwargs):
+        if "rev-parse" in args:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="fake rev-parse failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_rev_parse):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "fake rev-parse failure" in stderr
+    assert "exit 128" in stderr
+    assert str(tmp_path) in stderr
+
+
+def test_added_line_numbers_map_degrades_the_group_when_git_diff_raises_oserror(tmp_path, capsys):
+    _init_git_repo(tmp_path)
+    filenames = ["a.py", "b.py"]
+    targets = [tmp_path / name for name in filenames]
+    for target in targets:
+        target.write_text("x = 1\n")
+    subprocess.run(["git", "add", *filenames], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    for target in targets:
+        target.write_text("x = 1\ny = 2\n")
+
+    real_run = subprocess.run
+
+    def _fail_diff(args, **kwargs):
+        if "diff" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_diff):
+        added = guard._added_line_numbers_map("HEAD", [str(target) for target in targets])
+
+    assert added == {str(target): None for target in targets}
+    stderr = capsys.readouterr().err
+    assert "git diff" in stderr
+    assert "OSError" in stderr
+    for target in targets:
+        assert str(target.name) in stderr
+
+
+def test_added_line_numbers_map_degrades_only_the_repo_whose_toplevel_fails(tmp_path, capsys):
+    good_repo = tmp_path / "good_repo"
+    good_repo.mkdir()
+    _init_git_repo(good_repo)
+    good_file = good_repo / "good.py"
+    good_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "good.py"], cwd=good_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=good_repo, check=True)
+    good_file.write_text("x = 1\ny = 2\n")
+
+    bad_repo = tmp_path / "bad_repo"
+    bad_repo.mkdir()
+    _init_git_repo(bad_repo)
+    bad_file = bad_repo / "bad.py"
+    bad_file.write_text("x = 1\n")
+    subprocess.run(["git", "add", "bad.py"], cwd=bad_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=bad_repo, check=True)
+    bad_file.write_text("x = 1\ny = 2\n")
+
+    real_run = subprocess.run
+
+    def _fail_rev_parse_for_bad_repo(args, **kwargs):
+        if "rev-parse" in args and str(bad_repo) in args:
+            return subprocess.CompletedProcess(args, 128, stdout="", stderr="fake rev-parse failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_rev_parse_for_bad_repo):
+        added = guard._added_line_numbers_map("HEAD", [str(good_file), str(bad_file)])
+
+    assert added[str(bad_file)] is None
+    assert added[str(good_file)] == {2}
+    stderr = capsys.readouterr().err
+    assert str(bad_repo) in stderr
+    assert str(good_repo) not in stderr
+
+
+def _init_two_tracked_files_repo(tmp_path):
+    _init_git_repo(tmp_path)
+    a_target = tmp_path / "a.py"
+    b_target = tmp_path / "b.py"
+    a_target.write_text("x = 1\n")
+    b_target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py", "b.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    a_target.write_text("x = 1\ny = 2\n")
+    b_target.write_text("x = 1\ny = 2\n")
+    return a_target, b_target
+
+
+def test_added_line_numbers_map_warns_naming_only_the_failing_chunk_when_a_diff_chunk_fails(
+    tmp_path, monkeypatch, capsys
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake diff failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    stderr = capsys.readouterr().err
+    assert str(a_target) in stderr
+    assert "b.py" not in stderr
+
+
+def _exit_nonzero_status(args, **kwargs):
+    return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake status failure\n")
+
+
+def _timeout_status(args, **kwargs):
+    raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+
+
+def _oserror_status(args, **kwargs):
+    raise OSError("no such file or directory: git")
+
+
+@pytest.mark.parametrize(
+    "make_first_chunk_failure", [_exit_nonzero_status, _timeout_status, _oserror_status]
+)
+def test_added_line_numbers_map_still_classifies_later_untracked_and_tracked_files_after_a_status_chunk_fails(
+    tmp_path, monkeypatch, capsys, make_first_chunk_failure
+):
+    _init_git_repo(tmp_path)
+    status_failing_file = tmp_path / "a.py"
+    tracked_file_after_failure = tmp_path / "c.py"
+    status_failing_file.write_text("x = 1\n")
+    tracked_file_after_failure.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py", "c.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    status_failing_file.write_text("x = 1\ny = 2\n")
+    untracked_file_after_failure = tmp_path / "b.py"
+    untracked_file_after_failure.write_text("x = 1\n")
+    tracked_file_after_failure.write_text("x = 1\ny = 2\n")
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_status_chunk(args, **kwargs):
+        if "status" in args and "a.py" in args:
+            return make_first_chunk_failure(args, **kwargs)
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_status_chunk):
+        added = guard._added_line_numbers_map(
+            "HEAD",
+            [str(status_failing_file), str(untracked_file_after_failure), str(tracked_file_after_failure)],
+        )
+
+    assert added[str(status_failing_file)] is None
+    assert added[str(untracked_file_after_failure)] is None
+    assert added[str(tracked_file_after_failure)] == {2}
+    stderr = capsys.readouterr().err
+    assert str(status_failing_file) in stderr
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_exits_non_zero(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            return subprocess.CompletedProcess(args, 1, stdout="", stderr="fake diff failure\n")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_raises_oserror(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            raise OSError("no such file or directory: git")
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
+
+
+def test_added_line_numbers_map_keeps_diffing_later_chunks_after_an_earlier_chunk_times_out(
+    tmp_path, monkeypatch
+):
+    a_target, b_target = _init_two_tracked_files_repo(tmp_path)
+
+    monkeypatch.setattr(guard, "_PATHSPEC_CHUNK_SIZE", 1)
+    real_run = subprocess.run
+
+    def _fail_first_diff_chunk(args, **kwargs):
+        if "diff" in args and "a.py" in args:
+            raise subprocess.TimeoutExpired(args, kwargs.get("timeout"))
+        return real_run(args, **kwargs)
+
+    with patch("comment_intent_guard.subprocess.run", side_effect=_fail_first_diff_chunk):
+        added = guard._added_line_numbers_map("HEAD", [str(a_target), str(b_target)])
+
+    assert added[str(a_target)] is None
+    assert added[str(b_target)] == {2}
+
+
+def test_joined_for_message_lists_every_path_at_or_under_the_limit():
+    assert guard._joined_for_message(["a", "b", "c"]) == "a, b, c"
+
+
+def test_joined_for_message_caps_at_the_limit_and_counts_the_remainder():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e", "f", "g"]) == "a, b, c, d, e and 2 more"
+
+
+def test_joined_for_message_at_exactly_the_limit_has_no_remainder_suffix():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e"]) == "a, b, c, d, e"
+
+
+def test_joined_for_message_one_over_the_limit_reports_one_more():
+    assert guard._joined_for_message(["a", "b", "c", "d", "e", "f"]) == "a, b, c, d, e and 1 more"
+
+
+def test_finding_ending_before_the_added_lines_is_filtered_out():
+    assert guard._touches_added_lines((2, 3), {1}) is False
+
+
+def test_single_line_hunk_header_without_a_count_adds_exactly_one_line(tmp_path):
+    _init_git_repo(tmp_path)
+    yaml_file = tmp_path / "a.yaml"
+    yaml_file.write_text("old_key: value\n")
+    subprocess.run(["git", "add", "a.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    yaml_file.write_text("old_key: value\nnew_key: value\n")
+
+    added = guard._added_line_numbers("HEAD", str(yaml_file))
+
+    assert added == {2}
+
+
+def test_parse_porcelain_untracked_finds_an_untracked_entry_after_a_tracked_one():
+    porcelain_output = "M  a_tracked.py\0?? z_untracked.py\0"
+
+    untracked = guard._parse_porcelain_untracked(porcelain_output, ["a_tracked.py", "z_untracked.py"])
+
+    assert untracked == {"z_untracked.py"}
+
+
+def test_parse_diff_added_lines_tracks_file_boundaries_across_renames_deletes_and_unrequested_files():
+    diff_output = (
+        "diff --git a/gone.py b/gone.py\n"
+        "deleted file mode 100644\n"
+        "index 1234567..0000000\n"
+        "--- a/gone.py\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n"
+        "-line1\n"
+        "-line2\n"
+        "diff --git a/skip_me.py b/skip_me.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/skip_me.py\n"
+        "+++ b/skip_me.py\n"
+        "@@ -1,0 +1,3 @@\n"
+        "+skip_one\n"
+        "+skip_two\n"
+        "+skip_three\n"
+        "diff --git a/old_name.py b/renamed.py\n"
+        "similarity index 80%\n"
+        "rename from old_name.py\n"
+        "rename to renamed.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/old_name.py\n"
+        "+++ b/renamed.py\n"
+        "@@ -3,0 +4,2 @@ def foo():\n"
+        "+added_one\n"
+        "+added_two\n"
+        "diff --git a/new_file.py b/new_file.py\n"
+        "new file mode 100644\n"
+        "index 0000000..abcdef1\n"
+        "--- /dev/null\n"
+        "+++ b/new_file.py\n"
+        "@@ -0,0 +1,3 @@\n"
+        "+a\n"
+        "+b\n"
+        "+c\n"
+        "diff --git a/keep.py b/keep.py\n"
+        "index 1234567..89abcde 100644\n"
+        "--- a/keep.py\n"
+        "+++ b/keep.py\n"
+        "@@ -5,0 +6,2 @@ def bar():\n"
+        "+x\n"
+        "+y\n"
+    )
+
+    added = guard._parse_diff_added_lines(diff_output, {"renamed.py", "new_file.py", "keep.py"})
+
+    assert "skip_me.py" not in added
+    assert "gone.py" not in added
+    assert added == {
+        "renamed.py": {4, 5},
+        "new_file.py": {1, 2, 3},
+        "keep.py": {6, 7},
+    }
+
+
+def test_added_line_numbers_map_gives_both_spellings_of_one_file_the_same_added_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+    subprocess.run(["git", "add", "a.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    target.write_text("x = 1\ny = 2\n")
+
+    plain_spelling = str(target)
+    dotted_spelling = f"{tmp_path}/./a.py"
+
+    added = guard._added_line_numbers_map("HEAD", [plain_spelling, dotted_spelling])
+
+    assert added[plain_spelling] == {2}
+    assert added[dotted_spelling] == {2}
+
+
+def test_added_line_numbers_map_gives_both_spellings_of_one_untracked_file_none(tmp_path):
+    _init_git_repo(tmp_path)
+    target = tmp_path / "a.py"
+    target.write_text("x = 1\n")
+
+    plain_spelling = str(target)
+    dotted_spelling = f"{tmp_path}/./a.py"
+
+    added = guard._added_line_numbers_map("HEAD", [plain_spelling, dotted_spelling])
+
+    assert added[plain_spelling] is None
+    assert added[dotted_spelling] is None
+
+
+def test_added_line_numbers_map_treats_an_untouched_tracked_file_as_no_added_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    unchanged_file = tmp_path / "unchanged.yaml"
+    unchanged_file.write_text("old_key: value\n")
+    changed_file = tmp_path / "changed.yaml"
+    changed_file.write_text("old_key: value\n")
+    subprocess.run(["git", "add", "unchanged.yaml", "changed.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    changed_file.write_text("old_key: value\nnew_key: value\n")
+
+    added = guard._added_line_numbers_map("HEAD", [str(unchanged_file), str(changed_file)])
+
+    assert added[str(unchanged_file)] == set()
+    assert added[str(changed_file)] == {2}
+
+
+def test_added_line_numbers_against_a_real_repo_returns_only_the_appended_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text("old_key: value\n")
+    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+
+    yaml_file.write_text("old_key: value\nnew_key_one: value\nnew_key_two: value\n")
+
+    added = guard._added_line_numbers("HEAD", str(yaml_file))
+
+    assert added == {2, 3}
+
+
+def test_cli_main_in_process_exits_3_and_prints_the_blocking_message(tmp_path, capsys):
+    py_file = tmp_path / "jira123_fix.py"
+    py_file.write_text("VALUE = 1\n")
+
+    returncode = guard._cli_main(["--all", str(py_file)])
+
+    assert returncode == guard._EXIT_BRIGHT_LINE
+    assert "jira123" in capsys.readouterr().out
+
+
+def test_hook_main_in_process_denies_a_python_bright_line_violation(monkeypatch, capsys):
+    payload = {
+        "tool_name": "Edit",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "old_string": "pass\n",
+            "new_string": "# Issue #91's own branch point\npass\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "issue reference" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_hook_main_in_process_advises_on_a_yaml_oversize_comment_run(monkeypatch, capsys):
+    over_threshold_line_count = guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1
+    prose_lines = "\n".join(f"# reason {i}" for i in range(over_threshold_line_count))
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/zones.yaml",
+            "content": f"{prose_lines}\nkey: value\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert f"Comment run of {over_threshold_line_count}" in output["hookSpecificOutput"]["additionalContext"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"tool_name": "Read", "tool_input": {"file_path": "/repo/thing.py", "content": "x\n"}},
+                     id="non_write_or_edit_tool_is_ignored"),
+        pytest.param({"tool_name": "Write", "tool_input": "not a dict"}, id="tool_input_not_a_dict_is_ignored"),
+        pytest.param({"tool_name": "Write"}, id="missing_tool_input_is_ignored"),
+        pytest.param({"tool_name": "Write", "tool_input": {"content": "x\n"}}, id="missing_file_path_is_ignored"),
+        pytest.param(
+            {"tool_name": "Write", "tool_input": {"file_path": 5, "content": "x\n"}},
+            id="non_string_file_path_is_ignored",
+        ),
+        pytest.param(
+            {"tool_name": "Write", "tool_input": {"file_path": "/repo/notes.txt", "content": "x\n"}},
+            id="unsupported_extension_is_ignored",
+        ),
+        pytest.param(
+            {"tool_name": "Write", "tool_input": {"file_path": "/repo/thing.py"}},
+            id="missing_content_is_ignored",
+        ),
+    ],
+)
+def test_hook_main_routing_cases_produce_no_output(monkeypatch, capsys, payload):
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    assert capsys.readouterr().out == ""
+
+
+def test_hook_main_on_malformed_json_stdin_prints_to_stderr_and_produces_no_stdout(monkeypatch, capsys):
+    monkeypatch.setattr("sys.stdin", io.StringIO("not json"))
+
+    guard._hook_main()
+
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "comment_intent_guard:" in out.err
+
+
+def test_hook_main_denies_a_csharp_issue_reference_violation(monkeypatch, capsys):
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/src/Thing.cs",
+            "content": "int x = 1; // see #123 for context\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == guard._deny_payload([guard._issue_reference_violation("Comment", 0)])
+
+
+def test_hook_main_denies_a_jinja_issue_reference_violation(monkeypatch, capsys):
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/templates/thing.j2",
+            "content": "{# see #123 for context #}\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == guard._deny_payload([guard._issue_reference_violation("Jinja comment block", 0)])
+
+
+def test_hook_main_advises_on_a_csharp_evidence_marker(monkeypatch, capsys):
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/src/Thing.cs",
+            "content": "int x = 1; // fixed on 2026-01-05\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["hookEventName"] == "PreToolUse"
+    assert "date, measurement, or SHA" in output["hookSpecificOutput"]["additionalContext"]
+
+
+def test_cli_base_mode_on_an_untracked_file_treats_everything_as_added(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "placeholder.txt").write_text("x\n")
+    subprocess.run(["git", "add", "placeholder.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    yaml_file = tmp_path / "new_config.yaml"
+    yaml_file.write_text(
+        "# first reason for this shape\n"
+        "# second reason for this shape\n"
+        "# third reason for this shape\n"
+        "# fourth reason for this shape\n"
+        "# fifth reason for this shape\n"
+        "key: value\n"
+    )
+
+    result = _run_cli(["--base", base_sha, "new_config.yaml"], cwd=tmp_path)
+
+    assert "Comment run of 5" in result.stdout
+
+
+def test_cli_base_mode_anchors_git_to_the_files_own_repo_not_the_caller_cwd(tmp_path):
+    caller_cwd = tmp_path / "unrelated_caller_repo"
+    caller_cwd.mkdir()
+    _init_git_repo(caller_cwd)
+    (caller_cwd / "placeholder.txt").write_text("x\n")
+    subprocess.run(["git", "add", "placeholder.txt"], cwd=caller_cwd, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "unrelated"], cwd=caller_cwd, check=True)
+
+    file_repo = tmp_path / "the_files_own_repo"
+    file_repo.mkdir()
+    _init_git_repo(file_repo)
+    yaml_file = file_repo / "config.yaml"
+    yaml_file.write_text(
+        "# old reason one\n"
+        "# old reason two\n"
+        "# old reason three\n"
+        "# old reason four\n"
+        "# old reason five\n"
+        "old_key: value\n"
+    )
+    subprocess.run(["git", "add", "config.yaml"], cwd=file_repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=file_repo, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=file_repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    yaml_file.write_text(
+        "# old reason one\n"
+        "# old reason two\n"
+        "# old reason three\n"
+        "# old reason four\n"
+        "# old reason five\n"
+        "old_key: value\n"
+        "# new reason one\n"
+        "# new reason two\n"
+        "# new reason three\n"
+        "# new reason four\n"
+        "# new reason five\n"
+        "new_key: value\n"
+    )
+
+    result = _run_cli(["--base", base_sha, str(yaml_file)], cwd=caller_cwd)
+
+    assert "starting near line 7." in result.stdout
+    assert "starting near line 1." not in result.stdout
+
+
+def test_cli_base_mode_reports_a_comment_run_that_grew_past_threshold_via_appended_lines(tmp_path):
+    _init_git_repo(tmp_path)
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text(
+        "# reason one\n"
+        "# reason two\n"
+        "# reason three\n"
+        "key: value\n"
+    )
+    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    yaml_file.write_text(
+        "# reason one\n"
+        "# reason two\n"
+        "# reason three\n"
+        "# reason four\n"
+        "# reason five\n"
+        "# reason six\n"
+        "key: value\n"
+    )
+
+    result = _run_cli(["--base", base_sha, "config.yaml"], cwd=tmp_path)
+
+    assert "Comment run of 6" in result.stdout
+
+
+def test_cli_base_mode_reports_a_python_comment_run_with_a_blank_line_and_an_appended_marker(tmp_path):
+    _init_git_repo(tmp_path)
+    py_file = tmp_path / "thing.py"
+    py_file.write_text(
+        "# alpha\n"
+        "# bravo\n"
+        "\n"
+        "# charlie\n"
+        "# delta\n"
+        "x = 1\n"
+    )
+    subprocess.run(["git", "add", "thing.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    py_file.write_text(
+        "# alpha\n"
+        "# bravo\n"
+        "\n"
+        "# charlie\n"
+        "# delta\n"
+        "# fixed on 2026-05-22\n"
+        "x = 1\n"
+    )
+
+    result = _run_cli(["--base", base_sha, "thing.py"], cwd=tmp_path)
+
+    assert "Comment run of 5" in result.stdout
+    assert "date" in result.stdout.lower()
+
+
+def test_cli_base_mode_reports_an_evidence_marker_appended_to_the_tail_of_a_preexisting_run(tmp_path):
+    _init_git_repo(tmp_path)
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text(
+        "# reason one\n"
+        "# reason two\n"
+        "key: value\n"
+    )
+    subprocess.run(["git", "add", "config.yaml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    yaml_file.write_text(
+        "# reason one\n"
+        "# reason two\n"
+        "# confirmed on 2026-05-22\n"
+        "key: value\n"
+    )
+
+    result = _run_cli(["--base", base_sha, "config.yaml"], cwd=tmp_path)
+
+    assert "date" in result.stdout.lower()
+
+
+def test_cli_base_mode_never_filters_a_bright_line_filename_violation(tmp_path):
+    _init_git_repo(tmp_path)
+    py_file = tmp_path / "jira123_fix.py"
+    py_file.write_text("VALUE = 1\n")
+    subprocess.run(["git", "add", "jira123_fix.py"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=tmp_path, check=True)
+    base_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    py_file.write_text("VALUE = 1\nOTHER = 2\n")
+
+    result = _run_cli(["--base", base_sha, "jira123_fix.py"], cwd=tmp_path)
+
+    assert "jira123" in result.stdout
+
+
+def test_cli_exits_3_when_a_bright_line_violation_is_present(tmp_path):
+    py_file = tmp_path / "jira123_fix.py"
+    py_file.write_text("VALUE = 1\n")
+
+    result = _run_cli(["--all", str(py_file)])
+
+    assert result.returncode == 3
+
+
+def test_cli_exits_1_when_only_advisory_findings_are_present(tmp_path):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text(
+        "# first reason for this shape\n"
+        "# second reason for this shape\n"
+        "# third reason for this shape\n"
+        "# fourth reason for this shape\n"
+        "# fifth reason for this shape\n"
+        "key: value\n"
+    )
+
+    result = _run_cli(["--all", str(yaml_file)])
+
+    assert result.returncode == 1
+
+
+def test_cli_exits_0_when_no_findings_are_present(tmp_path):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text("key: value\n")
+
+    result = _run_cli(["--all", str(yaml_file)])
+
+    assert result.returncode == 0
+
+
+def test_cli_exits_4_when_running_under_a_pre_3_12_interpreter(tmp_path, capsys):
+    py_file = tmp_path / "config.py"
+    py_file.write_text("VALUE = 1\n")
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        returncode = guard._cli_main(["--all", str(py_file)])
+
+    assert returncode == 4
+    assert "3.12" in capsys.readouterr().err
+
+
+def test_hook_fails_open_when_issue_reference_scanning_itself_crashes(monkeypatch, capsys):
+    import io
+
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/config/template_sensors.yaml",
+            "content": "{# issue #91: whatever #}\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    with patch.object(guard, "find_yaml_issue_reference_violations", side_effect=RuntimeError("boom")):
+        guard._hook_main()
+
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_hook_still_denies_an_external_id_violation_when_issue_reference_analysis_is_unavailable(monkeypatch, capsys):
+    import io
+
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/tests/test_thing.py",
+            "content": 'def test_thing():\n    """Checks the thing."""\n    assert True\n',
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        guard._hook_main()
+
+    output = json.loads(capsys.readouterr().out)
+    assert output["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "test name" in output["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_hook_fails_open_when_only_issue_reference_analysis_is_unavailable(monkeypatch, capsys):
+    import io
+
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {
+            "file_path": "/repo/scripts/thing.py",
+            "content": "def add(a, b):\n    return a + b\n",
+        },
+    }
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps(payload)))
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        guard._hook_main()
+
+    assert capsys.readouterr().out.strip() == ""
+
+
+def test_cli_still_reports_a_bright_line_violation_when_analysis_is_unavailable(tmp_path, capsys):
+    py_file = tmp_path / "jira123_fix.py"
+    py_file.write_text("VALUE = 1\n")
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        returncode = guard._cli_main(["--all", str(py_file)])
+
+    assert "jira123" in capsys.readouterr().out
+    assert returncode == 4
+
+
+def test_cli_still_reports_later_files_after_one_is_unanalyzable(tmp_path, capsys):
+    first = tmp_path / "jira100_first.py"
+    first.write_text("VALUE = 1\n")
+    second = tmp_path / "jira200_second.py"
+    second.write_text("VALUE = 2\n")
+
+    with patch("sys.version_info", (3, 9, 6, "final", 0)):
+        returncode = guard._cli_main(["--all", str(first), str(second)])
+
+    out = capsys.readouterr().out
+    assert "jira100" in out
+    assert "jira200" in out
+    assert returncode == 4
+
+
+def test_cli_exits_4_on_an_unanticipated_internal_error(tmp_path, capsys):
+    yaml_file = tmp_path / "config.yaml"
+    yaml_file.write_text("key: value\n")
+
+    with patch.object(guard, "_findings_for_file", side_effect=RuntimeError("boom")):
+        returncode = guard._cli_main(["--all", str(yaml_file)])
+
+    assert returncode == 4
+    assert "comment_intent_guard" in capsys.readouterr().err
+
+
+def test_yaml_hash_after_jinja_inside_a_block_scalar_stays_inert_and_a_real_jinja_block_still_fires():
+    jinja_block_body = "\n".join(f"reason {i}" for i in range(guard.JINJA_BLOCK_LINE_THRESHOLD + 1))
+    text = (
+        "value_template: >-\n"
+        "  # 100 {{ states('sensor.x') }}\n"
+        "  # 101 second line\n"
+        "  # 102 third line\n"
+        "  # 103 fourth line\n"
+        "  # 104 fifth line\n"
+        "next_key: value\n"
+        f"{{#\n{jinja_block_body}\n#}}\n"
+    )
+
+    findings = guard.find_yaml_findings(text)
+
+    assert not any("Comment run" in f for f, _ in findings)
+    assert any("Jinja" in f and "block" in f for f, _ in findings)
+
+
+def _assert_finding_shape(finding, line_count):
+    message, span = finding
+    assert isinstance(message, str)
+    start, end = span
+    assert isinstance(start, int) and isinstance(end, int)
+    assert 1 <= start <= end <= line_count
+
+
+def test_every_python_finding_is_a_message_and_a_valid_line_span():
+    prose_lines = "\n".join(f"    reason {i}" for i in range(guard.DOCSTRING_LINE_THRESHOLD))
+    comment_lines = "\n".join(f"# reason {i}" for i in range(guard.COMMENT_RUN_LINE_THRESHOLD + 1))
+    text = (
+        f'"""\n{prose_lines}\n    confirmed on 2026-05-22\n"""\n'
+        f"{comment_lines}\n"
+        "# runtime measured at 5min\n"
+        "TIMEOUT = 300  # five minutes\n"
+    )
+    line_count = len(guard._split_rows(text))
+
+    findings = guard.find_misplaced_rationale(text)
+
+    assert len(findings) == 5
+    for finding in findings:
+        _assert_finding_shape(finding, line_count)
+
+    blocking_text = (
+        '"""Contains JIRA-123 reference."""\n'
+        "\n"
+        "def test_sp7_thing():\n"
+        '    """explains the test"""\n'
+        "    pass\n"
+    )
+    blocking_line_count = len(guard._split_rows(blocking_text))
+
+    blocking_findings = guard.find_blocking_violations(blocking_text, "sp6_fix.py")
+
+    assert len(blocking_findings) == 4
+    for finding in blocking_findings:
+        _assert_finding_shape(finding, blocking_line_count)
+
+
+def test_every_yaml_finding_is_a_message_and_a_valid_line_span():
+    jinja_body_lines = [f"  reason {i}" for i in range(guard.JINJA_BLOCK_LINE_THRESHOLD)]
+    jinja_body_lines[-1] = "  confirmed on 2026-05-22"
+    jinja_body = "\n".join(jinja_body_lines)
+
+    description_body_lines = [f"  para {i}" for i in range(guard.YAML_DESCRIPTION_LINE_THRESHOLD + 1)]
+    description_body_lines[-1] = "  runtime measured at 5min"
+    description_body = "\n".join(description_body_lines)
+
+    prose_comment_lines = "\n".join(f"# reason {i}" for i in range(guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1))
+    dead_config_lines = "\n".join(
+        f"#   key_{i}: value_{i}" for i in range(guard.YAML_COMMENT_RUN_LINE_THRESHOLD + 1)
+    )
+
+    text = (
+        f"value_template: >-\n  {{#\n{jinja_body}\n  #}}\n"
+        f"description: |\n{description_body}\n"
+        f"{prose_comment_lines}\n"
+        "key: value\n"
+        f"{dead_config_lines}\n"
+        "other_key: value\n"
+        "final_key: value  # confirmed on 2026-05-22\n"
+    )
+    line_count = len(guard._split_rows(text))
+
+    findings = guard.find_yaml_findings(text)
+
+    assert len(findings) == 7
+    for finding in findings:
+        _assert_finding_shape(finding, line_count)
+
+
+def _write_repo_config(repo_root, config):
+    (repo_root / guard._REPO_CONFIG_FILENAME).write_text(json.dumps(config))
+
+
+def test_a_filename_id_token_whose_prefix_is_repo_allowlisted_is_not_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert violations == []
+
+
+def test_a_filename_id_token_whose_prefix_is_not_repo_allowlisted_is_still_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "test_mg1_cool_demand.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("mg1" in v for v, _ in violations)
+
+
+def test_two_repos_with_different_allowlists_are_scoped_independently_in_the_same_process(tmp_path):
+    sp_repo = tmp_path / "sp_repo"
+    mg_repo = tmp_path / "mg_repo"
+    for repo, prefix in ((sp_repo, "sp"), (mg_repo, "mg")):
+        (repo / "tests").mkdir(parents=True)
+        _write_repo_config(repo, {"id_prefix_allowlist": [prefix]})
+
+    sp_file = sp_repo / "tests" / "test_gap_sp1.py"
+    mg_file = mg_repo / "tests" / "test_gap_mg1.py"
+
+    sp_violations = guard.find_blocking_violations("VALUE = 1\n", str(sp_file))
+    mg_violations = guard.find_blocking_violations("VALUE = 1\n", str(mg_file))
+    sp_in_mg_repo_violations = guard.find_blocking_violations(
+        "VALUE = 1\n", str(mg_repo / "tests" / "test_gap_sp1.py")
+    )
+
+    assert sp_violations == []
+    assert mg_violations == []
+    assert any("sp1" in v for v, _ in sp_in_mg_repo_violations)
+
+
+def test_a_repo_with_no_declared_config_keeps_the_id_rule_fully_enforced(tmp_path):
+    target = tmp_path / "tests" / "test_gap_sp1.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp1" in v for v, _ in violations)
+
+
+def test_an_unparseable_repo_config_leaves_the_id_rule_enforced_and_warns(tmp_path, capsys):
+    (tmp_path / guard._REPO_CONFIG_FILENAME).write_text("{not valid json")
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp6" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_a_repo_config_with_a_string_instead_of_a_list_of_prefixes_leaves_the_id_rule_enforced_and_warns(
+    tmp_path, capsys
+):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": "sp"})
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp6" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_an_unreadable_repo_config_leaves_the_id_rule_enforced_and_warns(tmp_path, capsys):
+    config_path = tmp_path / guard._REPO_CONFIG_FILENAME
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    config_path.chmod(0o000)
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    try:
+        violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+    finally:
+        config_path.chmod(0o644)
+
+    assert any("sp6" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_a_repo_config_that_is_a_json_list_instead_of_an_object_leaves_the_id_rule_enforced_and_warns(
+    tmp_path, capsys
+):
+    _write_repo_config(tmp_path, ["sp"])
+    target = tmp_path / "tests" / "templates" / "test_desired_panel_setpoint_sp6.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp6" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_a_repo_config_with_one_badly_shaped_prefix_rejects_the_whole_list_and_warns(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["SP", "mg"]})
+    sp_target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    sp_target.parent.mkdir(parents=True)
+    mg_target = tmp_path / "tests" / "test_gap_mg1.py"
+
+    sp_violations = guard.find_blocking_violations("VALUE = 1\n", str(sp_target))
+    warning = capsys.readouterr().err
+    mg_violations = guard.find_blocking_violations("VALUE = 1\n", str(mg_target))
+
+    assert any("sp1" in v for v, _ in sp_violations)
+    assert any("mg1" in v for v, _ in mg_violations)
+    assert "malformed" in warning.lower()
+
+
+def test_a_hyphenated_docstring_id_whose_prefix_is_repo_allowlisted_is_not_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["mg"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""MG-1 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+
+
+def test_a_hyphenated_docstring_id_whose_prefix_is_not_repo_allowlisted_is_still_a_violation(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["mg"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""SP-9 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert any("SP-9" in v for v, _ in violations)
+
+
+def test_one_declared_lowercase_prefix_clears_both_the_filename_and_hyphenated_id_forms(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    target.parent.mkdir(parents=True)
+    source = '"""SP-9 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+
+
+def test_a_six_letter_prefix_is_a_valid_allowlist_entry_and_clears_its_hyphenated_id(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["zscbay"]})
+    target = tmp_path / "tests" / "test_gap.py"
+    target.parent.mkdir(parents=True)
+    source = '"""ZSCBAY-1 golden case (docs/golden-cases.md)."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+    assert capsys.readouterr().err == ""
+
+
+def test_a_seven_letter_prefix_is_still_rejected_as_malformed(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["zscbays"]})
+    target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("sp1" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_e2e_hook_does_not_deny_a_new_file_whose_repo_allowlists_its_id_prefix(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    target = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    payload = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(target), "content": "VALUE = 1\n"},
+    }
+
+    result = _run_hook(payload)
+
+    assert result.stdout.strip() == ""
+
+
+def test_e2e_cli_all_mode_exits_clean_on_a_file_whose_repo_allowlists_its_id_prefix(tmp_path):
+    _write_repo_config(tmp_path, {"id_prefix_allowlist": ["sp"]})
+    py_file = tmp_path / "tests" / "test_desired_panel_setpoint_sp1.py"
+    py_file.parent.mkdir()
+    py_file.write_text("VALUE = 1\n")
+
+    result = _run_cli(["--all", str(py_file)])
+
+    assert result.returncode == 0
+
+
+def test_filename_only_allowlist_permits_the_filename_but_still_blocks_the_same_prefix_in_a_docstring(tmp_path):
+    _write_repo_config(tmp_path, {"filename_only_id_prefix_allowlist": ["gh"]})
+    target = tmp_path / "tests" / "test_gh553_oracle_tp_smoke.py"
+    target.parent.mkdir(parents=True)
+    source = '"""GH-553 regression."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert not any("the filename" in v for v, _ in violations)
+    assert any("a docstring" in v and "GH-553" in v for v, _ in violations)
+
+
+def test_filename_only_allowlist_permits_the_filename_but_still_blocks_the_same_prefix_in_a_test_name(tmp_path):
+    _write_repo_config(tmp_path, {"filename_only_id_prefix_allowlist": ["gh"]})
+    target = tmp_path / "tests" / "test_gh553_oracle_tp_smoke.py"
+    target.parent.mkdir(parents=True)
+    source = "def test_gh553_regression():\n    pass\n"
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert not any("the filename" in v for v, _ in violations)
+    assert any("a test name" in v and "gh553" in v for v, _ in violations)
+
+
+def test_a_malformed_filename_only_allowlist_leaves_the_filename_check_enforced_and_warns(tmp_path, capsys):
+    _write_repo_config(tmp_path, {"filename_only_id_prefix_allowlist": "gh"})
+    target = tmp_path / "tests" / "test_gh553_oracle_tp_smoke.py"
+    target.parent.mkdir(parents=True)
+
+    violations = guard.find_blocking_violations("VALUE = 1\n", str(target))
+
+    assert any("the filename" in v and "gh553" in v for v, _ in violations)
+    assert "malformed" in capsys.readouterr().err.lower()
+
+
+def test_the_two_allowlist_keys_are_independent_the_general_one_still_clears_docstrings_too(tmp_path):
+    _write_repo_config(
+        tmp_path,
+        {"id_prefix_allowlist": ["sp"], "filename_only_id_prefix_allowlist": ["gh"]},
+    )
+    target = tmp_path / "tests" / "test_gh553_sp1_setpoint.py"
+    target.parent.mkdir(parents=True)
+    source = '"""SP-1 golden case."""\nVALUE = 1\n'
+
+    violations = guard.find_blocking_violations(source, str(target))
+
+    assert violations == []
+
+
+def test_unquote_git_header_path_handles_mixed_raw_and_octal_escapes_from_quote_path_false():
+    raw = '"b/a\\"☃.py"'
+
+    assert guard._unquote_git_header_path(raw) == 'b/a"☃.py'
+
+
+def test_unquote_git_header_path_handles_a_fully_octal_quoted_path():
+    raw = '"b/a\\"\\342\\230\\203.py"'
+
+    assert guard._unquote_git_header_path(raw) == 'b/a"☃.py'
+
+
+def test_unquote_git_header_path_strips_only_a_trailing_tab_not_a_leading_one():
+    raw = "\tb/a\tb.py\t"
+
+    assert guard._unquote_git_header_path(raw) == "\tb/a\tb.py"
+
+
+def test_unquote_git_header_path_falls_back_to_the_raw_quoted_string_when_not_valid_utf8():
+    raw = '"b/a\\377.py"'
+
+    assert guard._unquote_git_header_path(raw) == raw
+
+
+def test_c_unquote_body_treats_a_trailing_lone_backslash_as_a_literal_character():
+    assert guard._c_unquote_body("a\\") == b"a\\"
+
+
+def test_c_unquote_body_keeps_an_unrecognized_escape_as_backslash_and_char():
+    assert guard._c_unquote_body("a\\zb") == b"a\\zb"
+
+
+def test_c_unquote_body_stops_an_octal_escape_at_three_digits():
+    assert guard._c_unquote_body("\\1234") == bytes([0o123]) + b"4"
