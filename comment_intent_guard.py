@@ -820,7 +820,8 @@ def _csharp_declared_method_name(tokens, k):
                 name_k -= 1
             if name_k < 0 or not _csharp_is_identifier_start(tokens[name_k].text[0]):
                 return None
-            return tokens[name_k]._replace(text=tokens[name_k].text.removeprefix("@"))
+            name = tokens[name_k].text.removeprefix("@")
+            return tokens[name_k]._replace(text=name) if name else None
         k += 1
     return None
 
