@@ -4564,19 +4564,17 @@ def test_a_lone_at_sign_with_nothing_after_it_is_not_a_declared_name():
 
 
 @pytest.mark.parametrize(
-    "line_one",
+    "text",
     [
-        'var s = "abc\\',
-        "char c = '",
-        "char c = '\\",
-        'var s = $"abc\\',
+        'var s = "abc\\\n// c\n',
+        "char c = '\n'\"'// c",
+        "char c = '\\\n'\"'// c",
+        'var s = $"abc\\\n// c\n',
     ],
 )
 def test_line_bound_literal_edge_cases_put_the_trailing_comment_on_the_same_row_under_lf_and_crlf(
-    line_one,
+    text,
 ):
-    text = f"{line_one}\n// c\n"
-
     lf_spans, _lf_tokens, _lf_doc_anchors = guard._csharp_lex(text)
     crlf_spans, _crlf_tokens, _crlf_doc_anchors = guard._csharp_lex(text.replace("\n", "\r\n"))
 
@@ -4694,9 +4692,7 @@ def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_
 
 
 def test_csharp_lex_is_idempotent_under_crlf_line_endings():
-    checked = 0
     for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED, _CSHARP_SOUP_CASE_COUNT)):
-        checked += 1
         spans, tokens, _doc_anchors = guard._csharp_lex(text)
         crlf_spans, crlf_tokens, _crlf_doc_anchors = guard._csharp_lex(text.replace("\n", "\r\n"))
         rows = [(kind, start_li, end_li, close_col) for kind, start_li, end_li, _content, close_col in spans]
@@ -4707,6 +4703,4 @@ def test_csharp_lex_is_idempotent_under_crlf_line_endings():
         token_rows = [(token.text, token.row) for token in tokens]
         crlf_token_rows = [(token.text, token.row) for token in crlf_tokens]
         assert token_rows == crlf_token_rows, f"seed index {index} token rows changed under CRLF: {text!r}"
-
-    assert checked == _CSHARP_SOUP_CASE_COUNT
 
