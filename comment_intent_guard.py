@@ -928,7 +928,9 @@ def _flush_csharp_comment_run(findings, blocking, run_start, run_end, run_lines)
 def _csharp_skip_char_literal(text, start):
     i = start + 1
     n = len(text)
-    if i < n and text[i] == "\\" and i + 1 < n:
+    if i < n and text[i] in "\r\n":
+        return start + 1
+    if i < n and text[i] == "\\" and i + 1 < n and text[i + 1] not in "\r\n":
         i += 2
     elif i < n:
         i += 1
@@ -970,7 +972,7 @@ def _csharp_skip_string(text, start):
     i = start + 1
     n = len(text)
     while i < n and text[i] != "\n":
-        if text[i] == "\\" and i + 1 < n:
+        if text[i] == "\\" and i + 1 < n and text[i + 1] not in "\r\n":
             i += 2
             continue
         if text[i] == '"':

@@ -2056,6 +2056,54 @@ def test_escaped_quote_in_interpolated_string_text_is_not_a_comment_boundary():
     assert spans == [("line", 0, 0, " real #1", None)]
 
 
+def test_regular_string_with_backslash_before_lf_ends_at_that_lines_end():
+    text = '"abc\\\n'
+
+    end = guard._csharp_skip_string(text, 0)
+
+    assert end == text.index("\n")
+
+
+def test_regular_string_with_backslash_before_crlf_ends_at_that_lines_end():
+    text = '"abc\\\r\n'
+
+    end = guard._csharp_skip_string(text, 0)
+
+    assert end == text.index("\n")
+
+
+def test_unterminated_char_literal_followed_by_lf_does_not_span_to_next_line():
+    text = "'\n'"
+
+    end = guard._csharp_skip_char_literal(text, 0)
+
+    assert end == 1
+
+
+def test_unterminated_char_literal_followed_by_crlf_does_not_span_to_next_line():
+    text = "'\r\n'"
+
+    end = guard._csharp_skip_char_literal(text, 0)
+
+    assert end == 1
+
+
+def test_char_literal_with_backslash_before_lf_does_not_span_to_next_line():
+    text = "'\\\n'"
+
+    end = guard._csharp_skip_char_literal(text, 0)
+
+    assert end == 1
+
+
+def test_char_literal_with_backslash_before_crlf_does_not_span_to_next_line():
+    text = "'\\\r\n'"
+
+    end = guard._csharp_skip_char_literal(text, 0)
+
+    assert end == 1
+
+
 def test_skip_char_literal_consumes_an_escaped_quote_whole():
     text = "'\\''"
 
@@ -4513,6 +4561,28 @@ def test_a_lone_at_sign_with_nothing_after_it_is_not_a_declared_name():
     violations = guard.find_csharp_blocking_violations(text, "/repo/Tests/ThingTests.cs")
 
     assert violations == []
+
+
+@pytest.mark.parametrize(
+    "line_one",
+    [
+        'var s = "abc\\',
+        "char c = '",
+        "char c = '\\",
+    ],
+)
+def test_line_bound_literal_edge_cases_put_the_trailing_comment_on_the_same_row_under_lf_and_crlf(
+    line_one,
+):
+    text = f"{line_one}\n// c\n"
+
+    lf_spans, _lf_tokens, _lf_doc_anchors = guard._csharp_lex(text)
+    crlf_spans, _crlf_tokens, _crlf_doc_anchors = guard._csharp_lex(text.replace("\n", "\r\n"))
+
+    lf_rows = [(kind, start_li, end_li) for kind, start_li, end_li, _content, _close_col in lf_spans]
+    crlf_rows = [(kind, start_li, end_li) for kind, start_li, end_li, _content, _close_col in crlf_spans]
+
+    assert lf_rows == crlf_rows == [("line", 1, 1)]
 
 
 def test_thousands_of_unterminated_interpolation_hole_openers_do_not_recurse():
