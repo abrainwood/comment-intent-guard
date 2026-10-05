@@ -4537,7 +4537,7 @@ _CSHARP_SOUP_SEED = 20261005
 _CSHARP_SOUP_CASE_COUNT = 20000
 _CSHARP_SOUP_ATOMS = (
     "$", "$$", "@", '"', '"""', "{", "}", "{{", "}}", "\\", "'",
-    "\n", "\r\n", "//", "/*", "*/", "#", "if", "x", "ab", " ", "1",
+    "\n", "\r\n", "//", "/*", "*/", "#", "if", "x", "ab", " ", "1", "/", "*",
 )
 
 
@@ -4548,17 +4548,9 @@ def _csharp_soup_cases(seed, count):
         yield "".join(rng.choice(_CSHARP_SOUP_ATOMS) for _ in range(atom_count))
 
 
-def _csharp_soup_unescaped_newline_limit(text, start):
-    n = len(text)
-    i = start
-    while i < n:
-        if text[i] == "\\" and i + 1 < n:
-            i += 2
-            continue
-        if text[i] == "\n":
-            return i
-        i += 1
-    return n
+def _csharp_soup_first_newline_limit(text, start):
+    nl = text.find("\n", start)
+    return len(text) if nl == -1 else nl
 
 
 def test_csharp_lex_never_raises_on_seeded_char_soup():
@@ -4574,10 +4566,20 @@ def test_csharp_lex_span_rows_and_close_columns_stay_within_the_text():
         lines = text.split("\n")
         line_count = len(lines)
         spans, _tokens, _doc_anchors = guard._csharp_lex(text)
-        for _kind, start_li, end_li, _content, close_col in spans:
+        for _kind, start_li, end_li, content, close_col in spans:
             assert 0 <= start_li <= end_li < line_count, f"seed index {index} span rows oob: {text!r}"
+            parts = content.split("\n")
             if close_col is not None:
                 assert 0 <= close_col <= len(lines[end_li]), f"seed index {index} close_col oob: {text!r}"
+                assert lines[end_li].startswith("*/", close_col), f"seed index {index} close_col not at */: {text!r}"
+                assert lines[end_li][:close_col].endswith(parts[-1]), f"seed index {index} content mislocated: {text!r}"
+                if len(parts) > 1:
+                    assert lines[start_li].endswith(parts[0]), f"seed index {index} content mislocated: {text!r}"
+            else:
+                assert len(parts) == end_li - start_li + 1, f"seed index {index} open span row count wrong: {text!r}"
+                assert all(lines[start_li + k].endswith(part) for k, part in enumerate(parts)), (
+                    f"seed index {index} open span content mislocated: {text!r}"
+                )
 
 
 def test_csharp_lex_tokens_stay_within_the_text_and_in_non_decreasing_row_order():
@@ -4594,26 +4596,42 @@ def test_csharp_lex_tokens_stay_within_the_text_and_in_non_decreasing_row_order(
 def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_strings():
     for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED, _CSHARP_SOUP_CASE_COUNT)):
         n = len(text)
+        has_backslash_newline = "\\\n" in text
         for position in range(n):
             end = guard._csharp_try_skip_literal(text, position)
             if end is None:
                 continue
             assert position < end <= n, f"seed index {index} pos {position} literal end oob: {text!r}"
-            if text[position] != '"':
+            if text[position] == "'":
+                assert end - position in (1, 3, 4), f"seed index {index} pos {position} char literal width: {text!r}"
                 continue
-            quote_run = 1
-            while position + quote_run < n and text[position + quote_run] == '"':
-                quote_run += 1
-            if quote_run >= 3:
+            if has_backslash_newline:
                 continue
-            limit = _csharp_soup_unescaped_newline_limit(text, position)
-            assert end <= limit, f"seed index {index} pos {position} literal crossed a line: {text!r}"
+            if text[position] == '"':
+                quote_run = 1
+                while position + quote_run < n and text[position + quote_run] == '"':
+                    quote_run += 1
+                if quote_run >= 3:
+                    continue
+                limit = _csharp_soup_first_newline_limit(text, position)
+                assert end <= limit, f"seed index {index} pos {position} literal crossed a line: {text!r}"
+                continue
+            if text.startswith('$"', position) and not text.startswith('$"""', position) and (
+                position == 0 or text[position - 1] not in "$@"
+            ):
+                limit = _csharp_soup_first_newline_limit(text, position)
+                segment = text[position:limit]
+                if "@" not in segment and "'" not in segment and '"""' not in segment:
+                    assert end <= limit, f"seed index {index} pos {position} interpolated string crossed a line: {text!r}"
+
+
+_CSHARP_SOUP_CRLF_QUIRK_RE = re.compile(r"'\\?\n'")
 
 
 def test_csharp_lex_is_idempotent_under_crlf_line_endings_outside_quoted_literal_edge_cases():
     checked = 0
     for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED, _CSHARP_SOUP_CASE_COUNT)):
-        if "'" in text or "\\\n" in text:
+        if _CSHARP_SOUP_CRLF_QUIRK_RE.search(text) or "\\\n" in text:
             continue
         checked += 1
         spans, tokens, _doc_anchors = guard._csharp_lex(text)
@@ -4627,5 +4645,5 @@ def test_csharp_lex_is_idempotent_under_crlf_line_endings_outside_quoted_literal
         crlf_token_rows = [(token.text, token.row) for token in crlf_tokens]
         assert token_rows == crlf_token_rows, f"seed index {index} token rows changed under CRLF: {text!r}"
 
-    assert checked > 5000
+    assert checked > _CSHARP_SOUP_CASE_COUNT * 0.9
 
