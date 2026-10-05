@@ -4687,7 +4687,7 @@ def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_
                 assert end <= limit, f"seed index {index} pos {position} literal crossed a line: {text!r}"
                 continue
             if text.startswith('$"', position) and not text.startswith('$"""', position) and (
-                position == 0 or text[position - 1] not in "$@"
+                position == 0 or text[position - 1] != "@"
             ):
                 limit = _csharp_soup_first_newline_limit(text, position)
                 segment = text[position:limit]
