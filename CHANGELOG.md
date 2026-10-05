@@ -6,6 +6,61 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-10-05
+
+### Fixed
+
+- C# analyser rewritten as a single token pass with one lexer - PR #74
+  (replace the C# walks with a single token pass), PR #77 (fold token
+  emission into a single C# lexer), and PR #76 (test-attribute vocabulary,
+  Roslyn /*** confirmation, attribute/name-resolution fixes), together
+  closing issue #68 and issues #70, #71, #75. The lexer's character-level
+  walk produces spans, tokens, and doc anchors in one pass; unterminated `/*`
+  now ends at the opening line (per PR #53 policy), and preprocessor lines
+  are skipped uniformly by spans and tokens. Method names starting with `_`
+  or `@` are no longer silently dropped. Generic type arguments and dotted
+  attribute names inside brackets are no longer misread. Two doc-commented
+  test methods on the same row are deduped by `(row, name)` instead of `row`
+  alone. The tuple-return-type heuristic is replaced with a structural rule
+  (parameter list is the `(...)` group whose close is followed by `{`, `=`,
+  `;`, or `where`). Test-attribute vocabulary extended: `DataTestMethod`,
+  `TestCaseSource`, and a `Fact`/`Theory`/`TestMethod` suffix rule
+  (`CustomFact`, `UIFact`, `STATestMethod`, `UITestMethod`, ...).
+- Attribute-walk fixes across six PRs: stacked closed block comments on the
+  backward path (PR #60, closes #58), forward/backward attribute-walk gaps
+  (PR #62, closes #61), forward walk skipping `//` comments and backward
+  walk crossing `///` lines (PR #64, closes #63), doc-comment classification
+  and backward walk on mixed comment/code lines (PR #66, closes #65), `/***`
+  classification and remaining attribute-walk gaps (PR #69, closes #67), and
+  merged-doc close-column regression and remainder-retry attribute-join bug
+  (PR #73, closes #72). The backward attribute walk no longer gets stuck
+  positive on a stray relational/shift operator inside attribute args (`1 <
+  2`, `a <= b`, `1 << 2`). Code preceding a `///` marker on its own line is
+  now recognized as a member boundary. A leading same-line block comment
+  whose remainder is real, non-attribute content no longer falls through to
+  the standalone-comment path. A doc comment's own line is now tracked
+  through a span-driven `trailing_doc_starts` set, not a re-lex that could
+  lose context.
+- Iterative C# interpolation-hole skipper replacing the mutually-recursive
+  chain that raised `RecursionError` on repeated `$@"{` line openers (PR #79,
+  closes #78). A single iterative walker (`_csharp_skip_interpolation_stack`)
+  tracks nested holes, verbatim/non-verbatim strings, and raw interpolated
+  strings on an explicit frame stack instead of the Python call stack. The same PR also fixes quadratic rescanning of unterminated literals on `#` directive lines.
+- CRLF line-bound string and char literals - a backslash before a line break
+  no longer escapes the newline, so an unterminated `"..."`, `$"..."`, or `'.'`
+  literal at end of line ends there, for both LF and CRLF (PR #83, closes #82).
+- Char-soup property tests for the C# lexer (PR #81, closes #80) uncovering
+  one lexer bug (the CRLF fix above) and one oracle gap (merged block-then-line
+  doc spans, PR #85, closes #84). Five invariant tests over 20000 seeded cases
+  (`_csharp_lex` never raises, span/token rows stay in bounds,
+  `_csharp_try_skip_literal` for plain strings never crosses unescaped newlines,
+  CRLF-ising leaves rows unchanged).
+
+### Changed
+
+- Documented the stdlib-only runtime constraint in CONTRIBUTING.md, naming
+  the runtime files rather than re-listing dev-tool names.
+
 ## [1.2.1] - 2026-09-26
 
 ### Fixed
