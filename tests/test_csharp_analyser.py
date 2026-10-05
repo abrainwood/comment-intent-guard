@@ -2056,6 +2056,54 @@ def test_escaped_quote_in_interpolated_string_text_is_not_a_comment_boundary():
     assert spans == [("line", 0, 0, " real #1", None)]
 
 
+def test_regular_string_with_backslash_before_lf_ends_at_that_lines_end():
+    text = '"abc\\\n'
+
+    end = guard._csharp_skip_string(text, 0)
+
+    assert end == text.index("\n")
+
+
+def test_regular_string_with_backslash_before_crlf_ends_at_that_lines_end():
+    text = '"abc\\\r\n'
+
+    end = guard._csharp_skip_string(text, 0)
+
+    assert end == text.index("\n")
+
+
+def test_unterminated_char_literal_followed_by_lf_does_not_span_to_next_line():
+    text = "'\n'"
+
+    end = guard._csharp_skip_char_literal(text, 0)
+
+    assert end == 1
+
+
+def test_unterminated_char_literal_followed_by_crlf_does_not_span_to_next_line():
+    text = "'\r\n'"
+
+    end = guard._csharp_skip_char_literal(text, 0)
+
+    assert end == 1
+
+
+def test_char_literal_with_backslash_before_lf_does_not_span_to_next_line():
+    text = "'\\\n'"
+
+    end = guard._csharp_skip_char_literal(text, 0)
+
+    assert end == 1
+
+
+def test_char_literal_with_backslash_before_crlf_does_not_span_to_next_line():
+    text = "'\\\r\n'"
+
+    end = guard._csharp_skip_char_literal(text, 0)
+
+    assert end == 1
+
+
 def test_skip_char_literal_consumes_an_escaped_quote_whole():
     text = "'\\''"
 
@@ -4515,6 +4563,27 @@ def test_a_lone_at_sign_with_nothing_after_it_is_not_a_declared_name():
     assert violations == []
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        'var s = "abc\\\n// c\n',
+        "char c = '\n'\"'// c",
+        "char c = '\\\n'\"'// c",
+        'var s = $"abc\\\n// c\n',
+    ],
+)
+def test_line_bound_literal_edge_cases_put_the_trailing_comment_on_the_same_row_under_lf_and_crlf(
+    text,
+):
+    lf_spans, _lf_tokens, _lf_doc_anchors = guard._csharp_lex(text)
+    crlf_spans, _crlf_tokens, _crlf_doc_anchors = guard._csharp_lex(text.replace("\n", "\r\n"))
+
+    lf_rows = [(kind, start_li, end_li) for kind, start_li, end_li, _content, _close_col in lf_spans]
+    crlf_rows = [(kind, start_li, end_li) for kind, start_li, end_li, _content, _close_col in crlf_spans]
+
+    assert lf_rows == crlf_rows == [("line", 1, 1)]
+
+
 def test_thousands_of_unterminated_interpolation_hole_openers_do_not_recurse():
     text = 'x = $@"{\n' * 3000
 
@@ -4596,7 +4665,6 @@ def test_csharp_lex_tokens_stay_within_the_text_and_in_non_decreasing_row_order(
 def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_strings():
     for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED, _CSHARP_SOUP_CASE_COUNT)):
         n = len(text)
-        has_backslash_newline = "\\\n" in text
         for position in range(n):
             end = guard._csharp_try_skip_literal(text, position)
             if end is None:
@@ -4604,8 +4672,6 @@ def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_
             assert position < end <= n, f"seed index {index} pos {position} literal end oob: {text!r}"
             if text[position] == "'":
                 assert end - position in (1, 3, 4), f"seed index {index} pos {position} char literal width: {text!r}"
-                continue
-            if has_backslash_newline:
                 continue
             if text[position] == '"':
                 quote_run = 1
@@ -4617,7 +4683,7 @@ def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_
                 assert end <= limit, f"seed index {index} pos {position} literal crossed a line: {text!r}"
                 continue
             if text.startswith('$"', position) and not text.startswith('$"""', position) and (
-                position == 0 or text[position - 1] not in "$@"
+                position == 0 or text[position - 1] != "@"
             ):
                 limit = _csharp_soup_first_newline_limit(text, position)
                 segment = text[position:limit]
@@ -4625,15 +4691,8 @@ def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_
                     assert end <= limit, f"seed index {index} pos {position} interpolated string crossed a line: {text!r}"
 
 
-_CSHARP_SOUP_CRLF_QUIRK_RE = re.compile(r"'\\?\n'")
-
-
-def test_csharp_lex_is_idempotent_under_crlf_line_endings_outside_quoted_literal_edge_cases():
-    checked = 0
+def test_csharp_lex_is_idempotent_under_crlf_line_endings():
     for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED, _CSHARP_SOUP_CASE_COUNT)):
-        if _CSHARP_SOUP_CRLF_QUIRK_RE.search(text) or "\\\n" in text:
-            continue
-        checked += 1
         spans, tokens, _doc_anchors = guard._csharp_lex(text)
         crlf_spans, crlf_tokens, _crlf_doc_anchors = guard._csharp_lex(text.replace("\n", "\r\n"))
         rows = [(kind, start_li, end_li, close_col) for kind, start_li, end_li, _content, close_col in spans]
@@ -4644,6 +4703,4 @@ def test_csharp_lex_is_idempotent_under_crlf_line_endings_outside_quoted_literal
         token_rows = [(token.text, token.row) for token in tokens]
         crlf_token_rows = [(token.text, token.row) for token in crlf_tokens]
         assert token_rows == crlf_token_rows, f"seed index {index} token rows changed under CRLF: {text!r}"
-
-    assert checked > _CSHARP_SOUP_CASE_COUNT * 0.9
 
