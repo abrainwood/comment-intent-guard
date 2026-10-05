@@ -4649,7 +4649,11 @@ def _assert_csharp_lex_span_shape(text, label):
             assert len(parts) == end_li - start_li + 1, f"{label} open span row count wrong: {text!r}"
             for k, part in enumerate(parts):
                 line = lines[start_li + k]
-                assert line.endswith(part) or (part + "*/") in line, (
+                assert (
+                    line.endswith(part)
+                    or ("/*" + part + "*/") in line
+                    or line.startswith(part + "*/")
+                ), (
                     f"{label} open span content mislocated: {text!r}"
                 )
 
