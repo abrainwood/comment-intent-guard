@@ -4604,6 +4604,8 @@ def test_thousands_of_unterminated_interpolation_hole_openers_on_directive_lines
 
 _CSHARP_SOUP_SEED = 20261005
 _CSHARP_SOUP_CASE_COUNT = 20000
+_CSHARP_SOUP_SEED_2 = 1
+_CSHARP_SOUP_CASE_COUNT_2 = 20000
 _CSHARP_SOUP_ATOMS = (
     "$", "$$", "@", '"', '"""', "{", "}", "{{", "}}", "\\", "'",
     "\n", "\r\n", "//", "/*", "*/", "#", "if", "x", "ab", " ", "1", "/", "*",
@@ -4630,25 +4632,64 @@ def test_csharp_lex_never_raises_on_seeded_char_soup():
             pytest.fail(f"seed index {index} raised {error!r} on {text!r}")
 
 
+def _assert_csharp_lex_span_shape(text, label):
+    lines = text.split("\n")
+    line_count = len(lines)
+    spans, _tokens, _doc_anchors = guard._csharp_lex(text)
+    for _kind, start_li, end_li, content, close_col in spans:
+        assert 0 <= start_li <= end_li < line_count, f"{label} span rows oob: {text!r}"
+        parts = content.split("\n")
+        if close_col is not None:
+            assert 0 <= close_col <= len(lines[end_li]), f"{label} close_col oob: {text!r}"
+            assert lines[end_li].startswith("*/", close_col), f"{label} close_col not at */: {text!r}"
+            assert lines[end_li][:close_col].endswith(parts[-1]), f"{label} content mislocated: {text!r}"
+            if len(parts) > 1:
+                assert lines[start_li].endswith(parts[0]), f"{label} content mislocated: {text!r}"
+        else:
+            assert len(parts) == end_li - start_li + 1, f"{label} open span row count wrong: {text!r}"
+            for k, part in enumerate(parts):
+                line = lines[start_li + k]
+                assert (
+                    line.endswith(part)
+                    or ("/*" + part + "*/") in line
+                    or line.startswith(part + "*/")
+                ), (
+                    f"{label} open span content mislocated: {text!r}"
+                )
+
+
 def test_csharp_lex_span_rows_and_close_columns_stay_within_the_text():
     for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED, _CSHARP_SOUP_CASE_COUNT)):
-        lines = text.split("\n")
-        line_count = len(lines)
-        spans, _tokens, _doc_anchors = guard._csharp_lex(text)
-        for _kind, start_li, end_li, content, close_col in spans:
-            assert 0 <= start_li <= end_li < line_count, f"seed index {index} span rows oob: {text!r}"
-            parts = content.split("\n")
-            if close_col is not None:
-                assert 0 <= close_col <= len(lines[end_li]), f"seed index {index} close_col oob: {text!r}"
-                assert lines[end_li].startswith("*/", close_col), f"seed index {index} close_col not at */: {text!r}"
-                assert lines[end_li][:close_col].endswith(parts[-1]), f"seed index {index} content mislocated: {text!r}"
-                if len(parts) > 1:
-                    assert lines[start_li].endswith(parts[0]), f"seed index {index} content mislocated: {text!r}"
-            else:
-                assert len(parts) == end_li - start_li + 1, f"seed index {index} open span row count wrong: {text!r}"
-                assert all(lines[start_li + k].endswith(part) for k, part in enumerate(parts)), (
-                    f"seed index {index} open span content mislocated: {text!r}"
-                )
+        _assert_csharp_lex_span_shape(text, f"seed index {index}")
+    for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED_2, _CSHARP_SOUP_CASE_COUNT_2)):
+        _assert_csharp_lex_span_shape(text, f"seed2 index {index}")
+
+
+def test_csharp_lex_merges_a_closed_javadoc_block_with_a_following_triple_slash_line_into_one_open_doc_span():
+    text = "/** a */\n///x\n"
+
+    spans, _tokens, _doc_anchors = guard._csharp_lex(text)
+
+    assert spans == [("doc", 0, 1, "* a \nx", None)]
+    _assert_csharp_lex_span_shape(text, "merged block-then-line doc")
+
+
+def test_csharp_lex_merges_a_javadoc_block_with_trailing_code_on_its_line_with_a_following_triple_slash_line():
+    text = "/** a */ junk\n///x\n"
+
+    spans, _tokens, _doc_anchors = guard._csharp_lex(text)
+
+    assert spans == [("doc", 0, 1, "* a \nx", None)]
+    _assert_csharp_lex_span_shape(text, "merged block-with-trailing-code-then-line doc")
+
+
+def test_csharp_lex_merges_a_multi_line_javadoc_block_with_a_following_triple_slash_line_into_one_open_doc_span():
+    text = "/** d\n */\n/// doc\n"
+
+    spans, _tokens, _doc_anchors = guard._csharp_lex(text)
+
+    assert spans == [("doc", 0, 2, "* d\n \n doc", None)]
+    _assert_csharp_lex_span_shape(text, "merged multi-line block-then-line doc")
 
 
 def test_csharp_lex_tokens_stay_within_the_text_and_in_non_decreasing_row_order():
