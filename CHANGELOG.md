@@ -45,30 +45,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   chain that raised `RecursionError` on repeated `$@"{` line openers (PR #79,
   closes #78). A single iterative walker (`_csharp_skip_interpolation_stack`)
   tracks nested holes, verbatim/non-verbatim strings, and raw interpolated
-  strings on an explicit frame stack instead of the Python call stack. Depth
-  is bounded by available memory, not the recursion limit. The same fix
-  eliminates quadratic rescanning on `#` directive lines.
+  strings on an explicit frame stack instead of the Python call stack. The same PR also fixes quadratic rescanning of unterminated literals on `#` directive lines.
 - CRLF line-bound string and char literals - a backslash before a line break
-  no longer escapes the newline, so an unterminated `"..."` or `'.'` literal
-  at end of line ends there, for both LF and CRLF (PR #83, closes #82).
+  no longer escapes the newline, so an unterminated `"..."`, `$"..."`, or `'.'`
+  literal at end of line ends there, for both LF and CRLF (PR #83, closes #82).
 - Char-soup property tests for the C# lexer (PR #81, closes #80) uncovering
-  two real lexer bugs fixed separately: the span-shape oracle for merged
-  block-then-line docs (PR #85, closes #84) and the CRLF line-bound literal
-  fix above. Five invariant tests over 20000 seeded cases (`_csharp_lex`
-  never raises, span/token rows stay in bounds, `_csharp_try_skip_literal`
-  for plain strings never crosses unescaped newlines, CRLF-ising leaves rows
-  unchanged outside backslash-before-newline patterns).
+  one lexer bug (the CRLF fix above) and one oracle gap (merged block-then-line
+  doc spans, PR #85, closes #84). Five invariant tests over 20000 seeded cases
+  (`_csharp_lex` never raises, span/token rows stay in bounds,
+  `_csharp_try_skip_literal` for plain strings never crosses unescaped newlines,
+  CRLF-ising leaves rows unchanged).
 
 ### Changed
 
 - Documented the stdlib-only runtime constraint in CONTRIBUTING.md, naming
   the runtime files rather than re-listing dev-tool names.
-
-### Known gaps
-
-- Interpolated (`$"..."`) string handling under CRLF still has the
-  backslash-before-newline divergence that Closes #82 left in place. The
-  issue itself was closed per scope, and a separate repro is on file.
 
 ## [1.2.1] - 2026-09-26
 
