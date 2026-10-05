@@ -1055,7 +1055,7 @@ def _csharp_skip_interpolation_stack(text, i, stack):
                 stack.append(["H", verbatim, 1])
                 i += 1
                 continue
-            if not verbatim and ch == "\\" and i + 1 < n:
+            if not verbatim and ch == "\\" and i + 1 < n and text[i + 1] not in "\r\n":
                 i += 2
                 continue
             if ch == '"':

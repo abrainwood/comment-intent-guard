@@ -4569,6 +4569,7 @@ def test_a_lone_at_sign_with_nothing_after_it_is_not_a_declared_name():
         'var s = "abc\\',
         "char c = '",
         "char c = '\\",
+        'var s = $"abc\\',
     ],
 )
 def test_line_bound_literal_edge_cases_put_the_trailing_comment_on_the_same_row_under_lf_and_crlf(
@@ -4666,7 +4667,6 @@ def test_csharp_lex_tokens_stay_within_the_text_and_in_non_decreasing_row_order(
 def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_strings():
     for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED, _CSHARP_SOUP_CASE_COUNT)):
         n = len(text)
-        has_backslash_newline = "\\\n" in text
         for position in range(n):
             end = guard._csharp_try_skip_literal(text, position)
             if end is None:
@@ -4674,8 +4674,6 @@ def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_
             assert position < end <= n, f"seed index {index} pos {position} literal end oob: {text!r}"
             if text[position] == "'":
                 assert end - position in (1, 3, 4), f"seed index {index} pos {position} char literal width: {text!r}"
-                continue
-            if has_backslash_newline:
                 continue
             if text[position] == '"':
                 quote_run = 1
@@ -4695,14 +4693,9 @@ def test_csharp_try_skip_literal_end_is_in_bounds_and_within_its_line_for_plain_
                     assert end <= limit, f"seed index {index} pos {position} interpolated string crossed a line: {text!r}"
 
 
-_CSHARP_SOUP_CRLF_QUIRK_RE = re.compile(r"'\\?\n'")
-
-
-def test_csharp_lex_is_idempotent_under_crlf_line_endings_outside_quoted_literal_edge_cases():
+def test_csharp_lex_is_idempotent_under_crlf_line_endings():
     checked = 0
     for index, text in enumerate(_csharp_soup_cases(_CSHARP_SOUP_SEED, _CSHARP_SOUP_CASE_COUNT)):
-        if _CSHARP_SOUP_CRLF_QUIRK_RE.search(text) or "\\\n" in text:
-            continue
         checked += 1
         spans, tokens, _doc_anchors = guard._csharp_lex(text)
         crlf_spans, crlf_tokens, _crlf_doc_anchors = guard._csharp_lex(text.replace("\n", "\r\n"))
@@ -4715,5 +4708,5 @@ def test_csharp_lex_is_idempotent_under_crlf_line_endings_outside_quoted_literal
         crlf_token_rows = [(token.text, token.row) for token in crlf_tokens]
         assert token_rows == crlf_token_rows, f"seed index {index} token rows changed under CRLF: {text!r}"
 
-    assert checked > _CSHARP_SOUP_CASE_COUNT * 0.9
+    assert checked == _CSHARP_SOUP_CASE_COUNT
 
